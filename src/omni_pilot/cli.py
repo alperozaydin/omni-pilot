@@ -13,6 +13,7 @@ from omni_pilot.config import (
     load_settings,
     load_reference_ranges,
     load_food_mappings,
+    load_supplements,
 )
 from omni_pilot.parser import parse_food_log, extract_unique_foods, generate_food_mappings
 from omni_pilot.enricher import enrich_all_foods
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SETTINGS = "config/settings.yaml"
 DEFAULT_REF_RANGES = "config/reference_ranges.yaml"
 DEFAULT_MAPPINGS = "config/food_mappings.yaml"
+DEFAULT_SUPPLEMENTS = "config/supplements.yaml"
 DEFAULT_DB = "db/food_db.json"
 
 
@@ -61,12 +63,14 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     settings_path = args.settings or DEFAULT_SETTINGS
     ref_ranges_path = args.ref_ranges or DEFAULT_REF_RANGES
     mappings_path = args.mappings or DEFAULT_MAPPINGS
+    supplements_path = args.supplements or DEFAULT_SUPPLEMENTS
     db_path = args.db or DEFAULT_DB
 
     # Load config
     settings = load_settings(settings_path)
     ref_ranges = load_reference_ranges(ref_ranges_path)
     mappings = load_food_mappings(mappings_path)
+    supplements = load_supplements(supplements_path)
 
     if not mappings:
         print("Error: No food mappings found. Run 'import' first.")
@@ -94,7 +98,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     # Analyze
     print("Analyzing micronutrient intake...")
-    result = analyze(entries, enriched, ref_ranges)
+    result = analyze(entries, enriched, ref_ranges, supplements=supplements)
 
     # Report
     print()
@@ -145,6 +149,7 @@ def main() -> None:
     analyze_parser.add_argument("--settings", default=None)
     analyze_parser.add_argument("--ref-ranges", default=None)
     analyze_parser.add_argument("--mappings", default=None)
+    analyze_parser.add_argument("--supplements", default=None)
     analyze_parser.add_argument("--db", default=None)
 
     args = parser.parse_args()
