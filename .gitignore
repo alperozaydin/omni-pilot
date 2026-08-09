@@ -1,2 +1,7 @@
-.venv
+.venv/
+__pycache__/
+*.pyc
+db/food_db.json
 .DS_Store
+reports/
+.worktrees/
