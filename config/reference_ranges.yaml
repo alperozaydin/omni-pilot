@@ -1,0 +1,334 @@
+# =============================================================================
+# Micronutrient Reference Ranges
+# =============================================================================
+# Sources:
+#   - NIH Office of Dietary Supplements (ods.od.nih.gov)
+#   - FAO/WHO/UNU Expert Consultation on Protein and Amino Acid Requirements (2007)
+#   - Dietary Guidelines for Americans (2020-2025)
+#
+# Terminology:
+#   rda  = Recommended Dietary Allowance (meets needs of 97-98% of healthy individuals)
+#   ai   = Adequate Intake (used when RDA cannot be established)
+#   ul   = Tolerable Upper Intake Level (max daily intake unlikely to cause harm)
+#   null = not established / not applicable
+#
+# Default values below are for: Male, 19-50 years
+# Adjust demographic section to match your profile.
+# =============================================================================
+
+demographic:
+  sex: "male"            # fill in: "male" or "female"
+  age_group: "31-50"      # fill in: e.g. "19-30", "31-50", "51-70"
+  body_weight_kg: 75    # fill in: your body weight in kg (needed for amino acid targets)
+
+# -----------------------------------------------------------------------------
+# Vitamins
+# -----------------------------------------------------------------------------
+nutrients:
+  vitamin_a_mcg:
+    name: "Vitamin A"
+    unit: "mcg"
+    type: "rda"
+    rda: 900
+    ul: 3000
+    source: "NIH"
+
+  vitamin_c_mg:
+    name: "Vitamin C"
+    unit: "mg"
+    type: "rda"
+    rda: 90
+    ul: 2000
+    source: "NIH"
+
+  vitamin_d_mcg:
+    name: "Vitamin D"
+    unit: "mcg"
+    type: "rda"
+    rda: 15
+    ul: 100
+    source: "NIH"
+
+  vitamin_e_mg:
+    name: "Vitamin E"
+    unit: "mg"
+    type: "rda"
+    rda: 15
+    ul: 1000
+    source: "NIH"
+
+  vitamin_k_mcg:
+    name: "Vitamin K"
+    unit: "mcg"
+    type: "ai"
+    ai: 120
+    ul: null          # not established
+    source: "NIH"
+
+  b1_thiamine_mg:
+    name: "Vitamin B1 (Thiamine)"
+    unit: "mg"
+    type: "rda"
+    rda: 1.2
+    ul: null          # not established
+    source: "NIH"
+
+  b2_riboflavin_mg:
+    name: "Vitamin B2 (Riboflavin)"
+    unit: "mg"
+    type: "rda"
+    rda: 1.3
+    ul: null          # not established
+    source: "NIH"
+
+  b3_niacin_mg:
+    name: "Vitamin B3 (Niacin)"
+    unit: "mg"
+    type: "rda"
+    rda: 16
+    ul: 35
+    source: "NIH"
+
+  b5_pantothenic_acid_mg:
+    name: "Vitamin B5 (Pantothenic Acid)"
+    unit: "mg"
+    type: "ai"
+    ai: 5
+    ul: null          # not established
+    source: "NIH"
+
+  b6_pyridoxine_mg:
+    name: "Vitamin B6 (Pyridoxine)"
+    unit: "mg"
+    type: "rda"
+    rda: 1.3
+    ul: 100
+    source: "NIH"
+
+  b12_cobalamin_mcg:
+    name: "Vitamin B12 (Cobalamin)"
+    unit: "mcg"
+    type: "rda"
+    rda: 2.4
+    ul: null          # not established
+    source: "NIH"
+
+  folate_mcg:
+    name: "Folate"
+    unit: "mcg"
+    type: "rda"
+    rda: 400
+    ul: 1000
+    source: "NIH"
+
+# -----------------------------------------------------------------------------
+# Minerals
+# -----------------------------------------------------------------------------
+  calcium_mg:
+    name: "Calcium"
+    unit: "mg"
+    type: "rda"
+    rda: 1000
+    ul: 2500
+    source: "NIH"
+
+  iron_mg:
+    name: "Iron"
+    unit: "mg"
+    type: "rda"
+    rda: 8
+    ul: 45
+    source: "NIH"
+
+  zinc_mg:
+    name: "Zinc"
+    unit: "mg"
+    type: "rda"
+    rda: 11
+    ul: 40
+    source: "NIH"
+
+  magnesium_mg:
+    name: "Magnesium"
+    unit: "mg"
+    type: "rda"
+    rda: 420           # 400 for 19-30, 420 for 31-50
+    ul: null           # UL of 350mg applies only to supplements, not food
+    source: "NIH"
+    note: "RDA is 400mg for ages 19-30, 420mg for 31-50. UL (350mg) applies to supplemental magnesium only, not dietary intake."
+
+  manganese_mg:
+    name: "Manganese"
+    unit: "mg"
+    type: "ai"
+    ai: 2.3
+    ul: 11
+    source: "NIH"
+
+  phosphorus_mg:
+    name: "Phosphorus"
+    unit: "mg"
+    type: "rda"
+    rda: 700
+    ul: 4000
+    source: "NIH"
+
+  potassium_mg:
+    name: "Potassium"
+    unit: "mg"
+    type: "ai"
+    ai: 3400
+    ul: null          # not established
+    source: "NIH"
+
+  selenium_mcg:
+    name: "Selenium"
+    unit: "mcg"
+    type: "rda"
+    rda: 55
+    ul: 400
+    source: "NIH"
+
+  copper_mg:
+    name: "Copper"
+    unit: "mg"
+    type: "rda"
+    rda: 0.9
+    ul: 10
+    source: "NIH"
+
+  sodium_mg:
+    name: "Sodium"
+    unit: "mg"
+    type: "ai"
+    ai: 1500           # adequate intake
+    ul: 2300            # chronic disease risk reduction intake (CDRR)
+    source: "NIH / Dietary Guidelines for Americans"
+    note: "AI is 1500mg. UL here represents the CDRR — intake above 2300mg increases chronic disease risk."
+
+# -----------------------------------------------------------------------------
+# Other
+# -----------------------------------------------------------------------------
+  fiber_g:
+    name: "Fiber"
+    unit: "g"
+    type: "ai"
+    ai: 38              # male ≤50 years
+    ul: null            # not established
+    source: "NIH"
+    note: "38g for males ≤50, 30g for males >50."
+
+  choline_mg:
+    name: "Choline"
+    unit: "mg"
+    type: "ai"
+    ai: 550
+    ul: 3500
+    source: "NIH"
+
+  omega3_ala_g:
+    name: "Omega-3 (ALA)"
+    unit: "g"
+    type: "ai"
+    ai: 1.6
+    ul: null            # not established
+    source: "NIH"
+
+  omega3_epa_dha_mg:
+    name: "Omega-3 (EPA + DHA)"
+    unit: "mg"
+    type: "ai"
+    ai: 250             # general recommendation from health organizations
+    ul: null            # not established
+    source: "AHA / EFSA"
+    note: "No official NIH RDA. 250-500mg/day widely recommended for heart health."
+
+# -----------------------------------------------------------------------------
+# Amino Acids (Essential)
+# -----------------------------------------------------------------------------
+# WHO/FAO/UNU values are in mg per kg body weight per day.
+# The analyzer multiplies these by body_weight_kg from the demographic section.
+# "Safe" intake is ~24% above average requirement to cover individual variation.
+# -----------------------------------------------------------------------------
+  histidine_g:
+    name: "Histidine"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 10       # average requirement
+    safe_mg_per_kg: 12  # ~24% above average
+    ul: null
+    source: "FAO/WHO/UNU 2007"
+
+  isoleucine_g:
+    name: "Isoleucine"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 20
+    safe_mg_per_kg: 25
+    ul: null
+    source: "FAO/WHO/UNU 2007"
+
+  leucine_g:
+    name: "Leucine"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 39
+    safe_mg_per_kg: 48
+    ul: null
+    source: "FAO/WHO/UNU 2007"
+
+  lysine_g:
+    name: "Lysine"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 30
+    safe_mg_per_kg: 37
+    ul: null
+    source: "FAO/WHO/UNU 2007"
+
+  methionine_cysteine_g:
+    name: "Methionine + Cysteine"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 15
+    safe_mg_per_kg: 19
+    ul: null
+    source: "FAO/WHO/UNU 2007"
+    note: "Combined requirement. MacroFactor logs these separately — analyzer sums them."
+
+  phenylalanine_tyrosine_g:
+    name: "Phenylalanine + Tyrosine"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 25
+    safe_mg_per_kg: 31
+    ul: null
+    source: "FAO/WHO/UNU 2007"
+    note: "Combined requirement. MacroFactor logs these separately — analyzer sums them."
+
+  threonine_g:
+    name: "Threonine"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 15
+    safe_mg_per_kg: 19
+    ul: null
+    source: "FAO/WHO/UNU 2007"
+
+  tryptophan_g:
+    name: "Tryptophan"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 4
+    safe_mg_per_kg: 5
+    ul: null
+    source: "FAO/WHO/UNU 2007"
+
+  valine_g:
+    name: "Valine"
+    unit: "g"
+    type: "who_per_kg"
+    mg_per_kg: 26
+    safe_mg_per_kg: 32
+    ul: null
+    source: "FAO/WHO/UNU 2007"
