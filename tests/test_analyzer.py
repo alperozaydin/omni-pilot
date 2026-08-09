@@ -128,3 +128,33 @@ class TestAnalyze:
         # Calcium: 200g * 50/100 + 300g * 120/100 = 100 + 360 = 460
         calcium = result["nutrients"]["calcium_mg"]
         assert calcium["daily_avg"] == pytest.approx(460.0)
+
+
+class TestAnalyzeSupplements:
+    def test_supplements_added_to_daily_avg(self):
+        entries = [{"date": "2026-08-09", "food_name": "Apple", "total_weight_g": 100}]
+        enriched = {"Apple": {"vitamin_c_mg": 5.0}}
+        ref_ranges = {
+            "demographic": {},
+            "nutrients": {
+                "vitamin_c_mg": {"name": "Vitamin C", "unit": "mg", "type": "rda", "rda": 90}
+            }
+        }
+        supplements = {"vitamin_c_mg": 50.0}
+        
+        result = analyze(entries, enriched, ref_ranges, supplements=supplements)
+        # 5.0 from food + 50.0 from supplement
+        assert result["nutrients"]["vitamin_c_mg"]["daily_avg"] == 55.0
+
+    def test_missing_supplement_ignored(self):
+        entries = [{"date": "2026-08-09", "food_name": "Apple", "total_weight_g": 100}]
+        enriched = {"Apple": {"vitamin_c_mg": 5.0}}
+        ref_ranges = {
+            "demographic": {},
+            "nutrients": {
+                "vitamin_c_mg": {"name": "Vitamin C", "unit": "mg", "type": "rda", "rda": 90}
+            }
+        }
+        
+        result = analyze(entries, enriched, ref_ranges, supplements=None)
+        assert result["nutrients"]["vitamin_c_mg"]["daily_avg"] == 5.0

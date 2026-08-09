@@ -71,3 +71,16 @@ def get_nutrient_target(
         return target_g, ul, "who_per_kg"
     else:
         return None, ul, nutrient_type
+
+
+def load_supplements(path: str) -> dict:
+    """Load supplements.yaml and return the mapping dict.
+
+    Returns empty dict if file does not exist.
+    """
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
+    return data if data is not None else {}
+

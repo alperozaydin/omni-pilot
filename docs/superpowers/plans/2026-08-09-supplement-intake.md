@@ -11,9 +11,9 @@
 ## Global Constraints
 
 - Python 3.9+ (use `from __future__ import annotations` for type hints)
-- All dependencies installed in project `.venv` — never global pip
+- All dependencies managed by `uv` — never global pip
 - Unit system: grams only — no ml handling
-- Run with: `python -m omni_pilot <command>` from project root
+- Run with: `uv run python -m omni_pilot <command>` from project root
 - Use `logging` module for warnings (not print)
 
 ---
@@ -54,7 +54,7 @@ class TestLoadSupplements:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `PYTHONPATH=src pytest tests/test_config.py::TestLoadSupplements -v`
+Run: `uv run pytest tests/test_config.py::TestLoadSupplements -v`
 Expected: FAIL with "ImportError: cannot import name 'load_supplements' from 'omni_pilot.config'"
 
 - [ ] **Step 3: Write minimal implementation**
@@ -76,7 +76,7 @@ def load_supplements(path: str) -> dict:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `PYTHONPATH=src pytest tests/test_config.py::TestLoadSupplements -v`
+Run: `uv run pytest tests/test_config.py::TestLoadSupplements -v`
 Expected: PASS
 
 - [ ] **Step 5: Create empty configuration file**
@@ -139,7 +139,7 @@ class TestAnalyzeSupplements:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `PYTHONPATH=src pytest tests/test_analyzer.py::TestAnalyzeSupplements -v`
+Run: `uv run pytest tests/test_analyzer.py::TestAnalyzeSupplements -v`
 Expected: FAIL (either `TypeError: analyze() got an unexpected keyword argument 'supplements'` or assertion error on daily avg)
 
 - [ ] **Step 3: Write minimal implementation**
@@ -165,7 +165,7 @@ Add inside `analyze()`, immediately before determining status (after `daily_avg 
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `PYTHONPATH=src pytest tests/test_analyzer.py::TestAnalyzeSupplements -v`
+Run: `uv run pytest tests/test_analyzer.py::TestAnalyzeSupplements -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
@@ -228,7 +228,7 @@ Update `analyze_parser` in `main()`:
 
 - [ ] **Step 2: Run Manual test to verify it passes**
 
-Run: `PYTHONPATH=src python -m omni_pilot analyze data/MacroFactor-example.xlsx`
+Run: `uv run python -m omni_pilot analyze data/MacroFactor-example.xlsx`
 Expected: Succeeds and produces a report without errors. 
 
 - [ ] **Step 3: Commit**

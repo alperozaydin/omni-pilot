@@ -7,12 +7,13 @@ import os
 import sys
 from datetime import date
 
-from tinydb import TinyDB
+from tinydb import TinyDB, Query
 
 from omni_pilot.config import (
     load_settings,
     load_reference_ranges,
     load_food_mappings,
+    load_supplements,
 )
 from omni_pilot.parser import parse_food_log, extract_unique_foods, generate_food_mappings
 from omni_pilot.enricher import enrich_all_foods
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SETTINGS = "config/settings.yaml"
 DEFAULT_REF_RANGES = "config/reference_ranges.yaml"
 DEFAULT_MAPPINGS = "config/food_mappings.yaml"
+DEFAULT_SUPPLEMENTS = "config/supplements.yaml"
 DEFAULT_DB = "db/food_db.json"
 
 
@@ -43,10 +45,20 @@ def cmd_import(args: argparse.Namespace) -> None:
     # Load existing mappings if present
     existing_mappings = load_food_mappings(mappings_output)
 
-    # Generate/merge mappings
-    generate_food_mappings(foods, existing_mappings, mappings_output)
+    # Load translations from TinyDB
+    db_path = args.db or DEFAULT_DB
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+    db = TinyDB(db_path)
+    translations_table = db.table("translations")
+    db_mappings = {doc["german"]: doc["english"] for doc in translations_table.all()}
+    
+    # Merge mappings: DB takes precedence, then existing YAML
+    known_mappings = {**existing_mappings, **db_mappings}
 
-    new_foods = [f for f in foods if f not in existing_mappings]
+    # Generate/merge mappings
+    generate_food_mappings(foods, known_mappings, mappings_output)
+
+    new_foods = [f for f in foods if f not in known_mappings]
     print(f"\nMappings written to: {mappings_output}")
     if new_foods:
         print(f"  {len(new_foods)} new foods need English equivalents.")
@@ -61,12 +73,14 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     settings_path = args.settings or DEFAULT_SETTINGS
     ref_ranges_path = args.ref_ranges or DEFAULT_REF_RANGES
     mappings_path = args.mappings or DEFAULT_MAPPINGS
+    supplements_path = args.supplements or DEFAULT_SUPPLEMENTS
     db_path = args.db or DEFAULT_DB
 
     # Load config
     settings = load_settings(settings_path)
     ref_ranges = load_reference_ranges(ref_ranges_path)
     mappings = load_food_mappings(mappings_path)
+    supplements = load_supplements(supplements_path)
 
     if not mappings:
         print("Error: No food mappings found. Run 'import' first.")
@@ -87,6 +101,20 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     food_names = extract_unique_foods(entries)
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
+    
+    # Save all non-empty mappings to database
+    translations_table = db.table("translations")
+    TranslationQuery = Query()
+    saved_count = 0
+    for german, english in mappings.items():
+        if english and str(english).strip():
+            translations_table.upsert(
+                {"german": german, "english": str(english).strip()},
+                TranslationQuery.german == german
+            )
+            saved_count += 1
+    print(f"  Saved/Updated {saved_count} mappings in the database.")
+
     enriched = enrich_all_foods(food_names, mappings, db, api_key)
 
     resolved = sum(1 for v in enriched.values() if v is not None)
@@ -94,7 +122,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     # Analyze
     print("Analyzing micronutrient intake...")
-    result = analyze(entries, enriched, ref_ranges)
+    result = analyze(entries, enriched, ref_ranges, supplements=supplements)
 
     # Report
     print()
@@ -133,6 +161,7 @@ def main() -> None:
         "--mappings-output", default=None,
         help=f"Output path for food_mappings.yaml (default: {DEFAULT_MAPPINGS})",
     )
+    import_parser.add_argument("--db", default=None, help=f"Path to TinyDB database (default: {DEFAULT_DB})")
 
     # Analyze command
     analyze_parser = subparsers.add_parser(
@@ -145,6 +174,7 @@ def main() -> None:
     analyze_parser.add_argument("--settings", default=None)
     analyze_parser.add_argument("--ref-ranges", default=None)
     analyze_parser.add_argument("--mappings", default=None)
+    analyze_parser.add_argument("--supplements", default=None)
     analyze_parser.add_argument("--db", default=None)
 
     args = parser.parse_args()
@@ -153,3 +183,6 @@ def main() -> None:
         cmd_import(args)
     elif args.command == "analyze":
         cmd_analyze(args)
+
+if __name__ == "__main__":
+    main()
