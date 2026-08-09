@@ -133,7 +133,12 @@ def get_food_micros(
     Food = Query()
     cached = db.search(Food.original_name == food_name)
     if cached:
-        return cached[0]["per_100g"]
+        if cached[0].get("usda_query") == usda_query:
+            return cached[0]["per_100g"]
+        else:
+            # Mapping changed, invalidate cache
+            logger.info("Mapping changed for '%s', refetching...", food_name)
+            db.remove(Food.original_name == food_name)
 
     # Query USDA
     usda_food = search_usda(usda_query, api_key)
