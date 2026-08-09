@@ -1,0 +1,7 @@
+# USDA FoodData Central API key
+usda_api_key: "YOUR_USDA_API_KEY_HERE"
+
+# Output preferences
+output:
+  show_amino_acids: true
+  show_ok_nutrients: true

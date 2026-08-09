@@ -4,3 +4,9 @@ __pycache__/
 .DS_Store
 reports/
 .worktrees/
+
+# Sensitive Configuration and Data
+config/*.yaml
+!config/*.example.yaml
+data/
+db/

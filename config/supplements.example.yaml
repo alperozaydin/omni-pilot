@@ -1,0 +1,12 @@
+# =============================================================================
+# Daily supplement intake matching system units (mcg, mg, g)
+# =============================================================================
+# Uncomment and fill in your average daily supplement intake to have it 
+# included in your micronutrient analysis.
+#
+# Examples:
+# vitamin_d_mcg: 25.0
+# omega3_epa_dha_mg: 1000.0
+
+# --- Vitamins ---
+# vitamin_a_mcg: 0.0

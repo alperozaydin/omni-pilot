@@ -1,0 +1,3 @@
+# Map food descriptions to known names in the database
+# format:
+# "Description from food log": "Searchable Name"
