@@ -7,7 +7,7 @@ import os
 import sys
 from datetime import date
 
-from tinydb import TinyDB
+from tinydb import TinyDB, Query
 
 from omni_pilot.config import (
     load_settings,
@@ -101,6 +101,20 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     food_names = extract_unique_foods(entries)
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
+    
+    # Save all non-empty mappings to database
+    translations_table = db.table("translations")
+    TranslationQuery = Query()
+    saved_count = 0
+    for german, english in mappings.items():
+        if english and str(english).strip():
+            translations_table.upsert(
+                {"german": german, "english": str(english).strip()},
+                TranslationQuery.german == german
+            )
+            saved_count += 1
+    print(f"  Saved/Updated {saved_count} mappings in the database.")
+
     enriched = enrich_all_foods(food_names, mappings, db, api_key)
 
     resolved = sum(1 for v in enriched.values() if v is not None)
