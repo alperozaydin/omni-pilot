@@ -44,6 +44,37 @@ MacroFactor .xlsx
 3. **Analyzer**: Calculates the daily average micronutrient intake across all logged days, includes supplement amounts from `config/supplements.yaml`, and compares the totals against the reference ranges in `config/reference_ranges.yaml`.
 4. **Reporter**: Displays a color-coded status summary (🟢 OK, 🟡 Low, 🔴 Deficient, 🟠 High) in the terminal and can export an HTML version.
 
+## Installation & Setup
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd omni-pilot
+   ```
+
+2. **Install dependencies**:
+   This project uses `uv` for fast dependency management. Make sure you have `uv` installed, then run:
+   ```bash
+   uv sync
+   ```
+
+3. **Set up configuration files**:
+   You need to create your own configuration files from the provided templates. Run the following commands:
+   ```bash
+   cp config/settings.example.yaml config/settings.yaml
+   cp config/supplements.example.yaml config/supplements.yaml
+   cp config/food_mappings.example.yaml config/food_mappings.yaml
+   ```
+
+4. **Get a USDA API Key**:
+   - Go to the [USDA FoodData Central API Key Signup](https://fdc.nal.usda.gov/api-key-signup.html) and register for a free API key.
+   - Open `config/settings.yaml` and replace `"YOUR_USDA_API_KEY_HERE"` with your actual key.
+
+5. **Export your data**:
+   - Export your food log from the MacroFactor app as a `.xlsx` file.
+   - Place this file in the `data/` directory (e.g., `data/MacroFactor-Export.xlsx`).
+
+
 ## Workflow
 
 The typical usage workflow involves three steps: **Import**, **Map**, and **Analyze**.
@@ -52,7 +83,7 @@ The typical usage workflow involves three steps: **Import**, **Map**, and **Anal
 First, import your MacroFactor export. This will parse your food logs and generate or update the `config/food_mappings.yaml` file with all unique foods found in your log.
 
 ```bash
-make import FILE=data/MacroFactor-example.xlsx
+make import FILE=data/MacroFactor-Export.xlsx
 ```
 
 ### 2. Map Foods
@@ -65,7 +96,7 @@ Open `config/food_mappings.yaml`. You will need to map your logged foods to Engl
 Once foods are mapped, run the analysis command. This will fetch missing data from the USDA API, calculate your daily averages, and output the report.
 
 ```bash
-make analyze FILE=data/MacroFactor-example.xlsx
+make analyze FILE=data/MacroFactor-Export.xlsx
 ```
 *(The `make analyze` command includes the `--html` flag by default, which generates an HTML report in the `reports/` directory).*
 
