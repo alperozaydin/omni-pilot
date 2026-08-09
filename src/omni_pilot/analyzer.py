@@ -42,11 +42,13 @@ class AnalysisResult(TypedDict):
     coverage: CoverageResult
 
 
-# Combined amino acid keys — WHO tracks these as pairs, but USDA/enricher
-# stores them individually. The analyzer sums them for comparison.
-COMBINED_AMINOS = {
+# Combined nutrient keys — some targets (like WHO aminos or EPA/DHA) are tracked
+# as pairs or combinations, but USDA/enricher stores them individually. 
+# The analyzer sums them for comparison.
+COMBINED_NUTRIENTS = {
     "methionine_cysteine_g": ["methionine_g", "cysteine_g"],
     "phenylalanine_tyrosine_g": ["phenylalanine_g", "tyrosine_g"],
+    "omega3_epa_dha_mg": ["omega3_epa_mg", "omega3_dha_mg"],
 }
 
 
@@ -116,6 +118,9 @@ def analyze(
         for nutrient_key in food_micros:
             value = food_micros.get(nutrient_key)
             if value is not None:
+                # USDA provides EPA and DHA in grams, but our reference target is in mg
+                if nutrient_key in ("omega3_epa_mg", "omega3_dha_mg"):
+                    value *= 1000.0
                 daily_totals[entry_date][nutrient_key] += value * scale_factor
 
     # Compute daily averages
@@ -130,8 +135,8 @@ def analyze(
         target, ul, target_type = get_nutrient_target(nutrient_key, ref_ranges)
 
         # Determine which enricher keys to sum for this reference key
-        if nutrient_key in COMBINED_AMINOS:
-            component_keys = COMBINED_AMINOS[nutrient_key]
+        if nutrient_key in COMBINED_NUTRIENTS:
+            component_keys = COMBINED_NUTRIENTS[nutrient_key]
         else:
             component_keys = [nutrient_key]
 
