@@ -11,9 +11,9 @@
 # --- Vitamins ---
 # vitamin_a_mcg: 0.0
 # vitamin_c_mg: 0.0
-# vitamin_d_mcg: 0.0
+vitamin_d_mcg: 25.0
 # vitamin_e_mg: 0.0
-# vitamin_k_mcg: 0.0
+vitamin_k_mcg: 20.0
 # b1_thiamine_mg: 0.0
 # b2_riboflavin_mg: 0.0
 # b3_niacin_mg: 0.0
