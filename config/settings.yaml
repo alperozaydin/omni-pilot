@@ -1,0 +1,7 @@
+# USDA FoodData Central API key
+usda_api_key: "6xJYsHf1Vlm7dbDZaG8Lb6SOq68tme3vSxY5YEBN"
+
+# Output preferences
+output:
+  show_amino_acids: true
+  show_ok_nutrients: true
