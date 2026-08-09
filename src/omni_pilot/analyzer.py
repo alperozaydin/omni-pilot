@@ -68,6 +68,7 @@ def analyze(
     entries: list[dict],
     enriched: dict[str, dict[str, float | None] | None],
     ref_ranges: dict,
+    supplements: dict | None = None,
 ) -> AnalysisResult:
     """Run the full micronutrient analysis.
 
@@ -143,6 +144,12 @@ def analyze(
             total_across_days += day_total
 
         daily_avg = total_across_days / num_days if num_days > 0 else 0.0
+
+        if supplements is None:
+            supplements = {}
+            
+        # Add supplement contribution
+        daily_avg += supplements.get(nutrient_key, 0.0)
 
         # Determine status
         if target is not None:
