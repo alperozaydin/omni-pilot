@@ -10,6 +10,7 @@ from omni_pilot.config import (
     load_reference_ranges,
     load_food_mappings,
     get_nutrient_target,
+    load_supplements,
 )
 
 
@@ -129,3 +130,18 @@ class TestGetNutrientTarget:
         }
         target, ul, target_type = get_nutrient_target("histidine_g", ref_ranges)
         assert target is None
+
+
+class TestLoadSupplements:
+    def test_loads_existing_supplements(self, tmp_path):
+        supplements_file = tmp_path / "supplements.yaml"
+        with open(supplements_file, "w") as f:
+            f.write("vitamin_d_mcg: 25.0\nomega3_epa_dha_mg: 1000.0\n")
+        
+        result = load_supplements(str(supplements_file))
+        assert result["vitamin_d_mcg"] == 25.0
+        assert result["omega3_epa_dha_mg"] == 1000.0
+
+    def test_returns_empty_dict_when_file_missing(self, tmp_path):
+        result = load_supplements(str(tmp_path / "nonexistent.yaml"))
+        assert result == {}
