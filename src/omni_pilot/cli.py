@@ -45,10 +45,20 @@ def cmd_import(args: argparse.Namespace) -> None:
     # Load existing mappings if present
     existing_mappings = load_food_mappings(mappings_output)
 
-    # Generate/merge mappings
-    generate_food_mappings(foods, existing_mappings, mappings_output)
+    # Load translations from TinyDB
+    db_path = args.db or DEFAULT_DB
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+    db = TinyDB(db_path)
+    translations_table = db.table("translations")
+    db_mappings = {doc["german"]: doc["english"] for doc in translations_table.all()}
+    
+    # Merge mappings: DB takes precedence, then existing YAML
+    known_mappings = {**existing_mappings, **db_mappings}
 
-    new_foods = [f for f in foods if f not in existing_mappings]
+    # Generate/merge mappings
+    generate_food_mappings(foods, known_mappings, mappings_output)
+
+    new_foods = [f for f in foods if f not in known_mappings]
     print(f"\nMappings written to: {mappings_output}")
     if new_foods:
         print(f"  {len(new_foods)} new foods need English equivalents.")
@@ -137,6 +147,7 @@ def main() -> None:
         "--mappings-output", default=None,
         help=f"Output path for food_mappings.yaml (default: {DEFAULT_MAPPINGS})",
     )
+    import_parser.add_argument("--db", default=None, help=f"Path to TinyDB database (default: {DEFAULT_DB})")
 
     # Analyze command
     analyze_parser = subparsers.add_parser(
