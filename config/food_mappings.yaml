@@ -4,84 +4,84 @@
 # Leave empty and re-run import to see which foods still need mapping.
 
 mappings:
-  Beer: 'beer'
-  Bergbauern Käse, Würzig-Nussig: 'gruyere cheese'
-  Bergbauern Mild Nussig Käse: 'swiss cheese'
-  Bergkäse (Heumilch): 'gruyere cheese'
-  Boiled Eggs: 'boiled eggs'
-  Bulgur Pilav: 'bulgur'
-  Burger Cheese: 'american cheese'
-  Butchers Honey Mustard: 'honey mustard'
-  Caractere Würzig&intensiv: 'swiss cheese'
-  Caramel Crunch Protein Bar: 'caramel protein bar'
-  Coconut: 'coconut'
-  Coconut Water, Fresh (Liquid From Coconut): 'coconut water'
-  Dessert, Prepared: 'skip'
-  Die Feinen Speisekartoffeln, Qualität I, Festkochend: 'potatoes'
-  Edeka Oryza Natur Reis 250g 1.29€ 1kg 5.16€: 'brown rice'
-  Eggplant, Raw: 'eggplant, raw'
-  Einfach Bio Hackfleisch Rind Zum Braten: 'ground beef'
-  Emmentaler in Scheiben: 'emmental cheese'
-  Express-Reis Basmati Jasmin: 'basmati rice'
-  Feine Butter: 'butter'
-  Frische Fettarme Bio Alpenmilch Laktosefrei: 'milk, low fat, lactose free'
-  Frosta Gemüsepfanne Orientalisch: 'mixed vegetables'
-  Gemüse-Ideen Italienisch: 'mixed vegetables'
-  Gemüsemischung, Leipziger Allerlei: 'mixed vegetables'
-  Grilled Cheese and Turkey Sandwich: 'grilled cheese and turkey sandwich'
-  Haferflocken: 'rolled oats'
-  Hahnchen Leber: 'chicken liver'
-  Hamburger Sauce: 'burger sauce'
-  High-Protein-Pudding - Schoko: 'chocolate pudding'
-  Himbeer-Heidelbeeren Mix: 'raspberries and blueberries'
-  Honey: 'honey'
-  Hähnchen Brustfilet: 'chicken breast'
-  Hähnchen-Minutenschlitzel: 'chicken breast'
-  Irish Beef Burger Patties: 'beef patty'
-  Jasmin-Reis: 'jasmine rice'
-  Joghurt Nach Griechischer Art Natur: 'plain greek yogurt'
-  Ketchup: 'ketchup'
-  Krunchy Chocolate Chunks Mit Cornflakes: 'granola'
-  Käse Leicht: 'low fat cheese'
-  Königsgemüse: 'mixed vegetables'
-  Lachs Aus Verantwortungsvoller Fischzucht: 'salmon'
-  Lachsfilet: 'salmon fillet'
-  Laugenstange: 'pretzel'
-  Leichter Joghurt, Natur: 'low fat plain yogurt'
-  Like Tender Crunch Original: 'skip'
-  Miso Soup with Rice and Chicken: 'miso soup'
-  Mushrooms: 'mushrooms'
-  Mutti Pastasaus Met Basilicum: 'tomato sauce'
-  Ochsenbäckchen in Rotweinsauce: 'beef'
-  Oliven , Grün: 'green olives'
-  Oliven Schwarze Oliven: 'black olives'
-  Originale Natives Olivenöl Extra Spray: 'olive oil'
-  Oryza Jasmin Reis: 'jasmine rice'
-  Papaya, Fresh: 'papaya, fresh'
-  Party Garnelen: 'shrimp'
-  Pomegranate, Fresh (Arils-Seed/Juice Sacs): 'pomegranate, fresh'
-  Pommes: 'french fries'
-  Potato Buns: 'potato bun'
-  Pretzel: 'pretzel'
-  Protein Bites 40 G: 'protein bar'
-  Protein Müsli 2: 'muesli'
-  Quick Add: 'skip'
-  Regular Balsamic Vinaigrette Dressing: 'balsamic vinaigrette dressing'
-  Reis XXL: 'white rice'
-  Reiswaffeln Ohne Salzzugabe: 'rice cakes, unsalted'
-  Rewe Bio PutenBrust-Schnitzel: 'turkey breast'
-  Rinder Rumpsteak: 'beef steak'
-  Roma Tomatoes: 'roma tomatoes'
-  Räucherlachs: 'smoked salmon'
-  Salad Dresings Dijon Vinaigrette: 'dijon vinaigrette dressing'
-  Salat Caprese: 'caprese salad'
-  Salat Manhattan: 'mixed salad'
-  Salzlakenkaese salat: 'feta cheese'
-  Steakhouse Frites: 'french fries'
-  Suppengemüse: 'mixed vegetables'
-  Tomaten: 'tomatoes'
-  Tomatoes: 'tomatoes'
-  Vollkorn Rigatoni: 'whole wheat pasta'
-  Watermelon, Fresh: 'watermelon, fresh'
-  Weizen Toastbrötchen: 'english muffin'
-  White Wine: 'white wine'
+  Beer: beer
+  Bergbauern Käse, Würzig-Nussig: gruyere cheese
+  Bergbauern Mild Nussig Käse: swiss cheese
+  Bergkäse (Heumilch): gruyere cheese
+  Boiled Eggs: boiled eggs
+  Bulgur Pilav: bulgur
+  Burger Cheese: american cheese
+  Butchers Honey Mustard: honey mustard
+  Caractere Würzig&intensiv: swiss cheese
+  Caramel Crunch Protein Bar: caramel protein bar
+  Coconut: coconut
+  Coconut Water, Fresh (Liquid From Coconut): coconut water
+  Dessert, Prepared: skip
+  Die Feinen Speisekartoffeln, Qualität I, Festkochend: potatoes
+  Edeka Oryza Natur Reis 250g 1.29€ 1kg 5.16€: brown rice
+  Eggplant, Raw: eggplant, raw
+  Einfach Bio Hackfleisch Rind Zum Braten: ground beef
+  Emmentaler in Scheiben: emmental cheese
+  Express-Reis Basmati Jasmin: basmati rice
+  Feine Butter: butter
+  Frische Fettarme Bio Alpenmilch Laktosefrei: milk, low fat, lactose free
+  Frosta Gemüsepfanne Orientalisch: mixed vegetables
+  Gemüse-Ideen Italienisch: mixed vegetables
+  Gemüsemischung, Leipziger Allerlei: mixed vegetables
+  Grilled Cheese and Turkey Sandwich: grilled cheese and turkey sandwich
+  Haferflocken: rolled oats
+  Hahnchen Leber: chicken liver
+  Hamburger Sauce: burger sauce
+  High-Protein-Pudding - Schoko: chocolate pudding
+  Himbeer-Heidelbeeren Mix: raspberries and blueberries
+  Honey: honey
+  Hähnchen Brustfilet: chicken breast
+  Hähnchen-Minutenschlitzel: chicken breast
+  Irish Beef Burger Patties: beef patty
+  Jasmin-Reis: jasmine rice
+  Joghurt Nach Griechischer Art Natur: plain greek yogurt
+  Ketchup: ketchup
+  Krunchy Chocolate Chunks Mit Cornflakes: granola
+  Käse Leicht: low fat cheese
+  Königsgemüse: mixed vegetables
+  Lachs Aus Verantwortungsvoller Fischzucht: salmon
+  Lachsfilet: salmon fillet
+  Laugenstange: pretzel
+  Leichter Joghurt, Natur: low fat plain yogurt
+  Like Tender Crunch Original: skip
+  Miso Soup with Rice and Chicken: miso soup
+  Mushrooms: mushrooms
+  Mutti Pastasaus Met Basilicum: tomato sauce
+  Ochsenbäckchen in Rotweinsauce: beef
+  Oliven , Grün: green olives
+  Oliven Schwarze Oliven: black olives
+  Originale Natives Olivenöl Extra Spray: olive oil
+  Oryza Jasmin Reis: jasmine rice
+  Papaya, Fresh: papaya, fresh
+  Party Garnelen: shrimp
+  Pomegranate, Fresh (Arils-Seed/Juice Sacs): pomegranate, fresh
+  Pommes: french fries
+  Potato Buns: potato bun
+  Pretzel: pretzel
+  Protein Bites 40 G: protein bar
+  Protein Müsli 2: muesli
+  Quick Add: skip
+  Regular Balsamic Vinaigrette Dressing: balsamic vinaigrette dressing
+  Reis XXL: white rice
+  Reiswaffeln Ohne Salzzugabe: rice cakes, unsalted
+  Rewe Bio PutenBrust-Schnitzel: turkey breast
+  Rinder Rumpsteak: beef steak
+  Roma Tomatoes: roma tomatoes
+  Räucherlachs: smoked salmon
+  Salad Dresings Dijon Vinaigrette: dijon vinaigrette dressing
+  Salat Caprese: caprese salad
+  Salat Manhattan: mixed salad
+  Salzlakenkaese salat: feta cheese
+  Steakhouse Frites: french fries
+  Suppengemüse: mixed vegetables
+  Tomaten: tomatoes
+  Tomatoes: tomatoes
+  Vollkorn Rigatoni: whole wheat pasta
+  Watermelon, Fresh: watermelon, fresh
+  Weizen Toastbrötchen: english muffin
+  White Wine: white wine

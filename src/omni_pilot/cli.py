@@ -158,3 +158,6 @@ def main() -> None:
         cmd_import(args)
     elif args.command == "analyze":
         cmd_analyze(args)
+
+if __name__ == "__main__":
+    main()
