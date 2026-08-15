@@ -5,9 +5,13 @@ import argparse
 import logging
 import os
 import sys
+import json
+import shutil
 from datetime import date
 
+import requests
 from tinydb import TinyDB, Query
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from omni_pilot.config import (
     load_settings,
@@ -28,6 +32,41 @@ DEFAULT_REF_RANGES = "config/reference_ranges.yaml"
 DEFAULT_MAPPINGS = "config/food_mappings.yaml"
 DEFAULT_SUPPLEMENTS = "config/supplements.yaml"
 DEFAULT_DB = "db/food_db.json"
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type((requests.RequestException, json.JSONDecodeError, KeyError, IndexError)),
+    reraise=True,
+)
+def translate_new_foods(foods_list: list[str], api_key: str, model: str = "gemini-flash-latest") -> list[str]:
+    """Translate and clean a list of foods using Gemini REST API."""
+    prompt = f"""
+Translate these messy German food entries to English and extract ONLY the most basic, generic ingredient.
+CRITICAL RULES:
+1. Drop ALL brand names, prices, and weights.
+2. DROP meal-specific modifiers and brand-like adjectives (e.g. 'Burger', 'Frozen', 'Crunch'). For example, 'Burger Cheese' MUST become simply 'Cheese'. 'Caramel Crunch Protein Bar' MUST become simply 'Protein bar'.
+
+Input foods:
+{json.dumps(foods_list)}
+"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.0,
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"}
+            }
+        }
+    }
+    resp = requests.post(url, json=payload, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+    return json.loads(raw_text)
 
 
 def cmd_import(args: argparse.Namespace) -> None:
@@ -54,16 +93,44 @@ def cmd_import(args: argparse.Namespace) -> None:
     
     # Merge mappings: DB takes precedence, then existing YAML
     known_mappings = {**existing_mappings, **db_mappings}
-
-    # Generate/merge mappings
-    generate_food_mappings(foods, known_mappings, mappings_output)
-
     new_foods = [f for f in foods if f not in known_mappings]
-    print(f"\nMappings written to: {mappings_output}")
+
     if new_foods:
         print(f"  {len(new_foods)} new foods need English equivalents.")
-        print("  Edit the file and fill in USDA-searchable names.")
-    else:
+        # Attempt Gemini Translation
+        settings_path = args.settings or DEFAULT_SETTINGS
+        settings = load_settings(settings_path)
+        gemini_key = settings.get("gemini_api_key")
+        gemini_model = settings.get("gemini_model", "gemini-flash-latest")
+        
+        if gemini_key and gemini_key != "YOUR_GEMINI_API_KEY_HERE":
+            print(f"  Using Gemini API ({gemini_model}) to automatically translate and clean foods...")
+            try:
+                translations = translate_new_foods(new_foods, gemini_key, model=gemini_model)
+                
+                # Check if returned length matches
+                if len(translations) == len(new_foods):
+                    print("  Gemini translation successful! Saving to database...")
+                    for german_food, english_food in zip(new_foods, translations):
+                        if english_food and english_food.strip() and english_food != "ERROR":
+                            known_mappings[german_food] = english_food.strip()
+                            translations_table.upsert(
+                                {"german": german_food, "english": english_food.strip()},
+                                Query().german == german_food
+                            )
+                else:
+                    print("  Warning: Gemini returned a different number of translations than expected.")
+            except Exception as e:
+                print(f"  Warning: Gemini translation failed: {e}")
+        else:
+            print("  No valid gemini_api_key found in settings. Skipping automatic translation.")
+            print("  Edit the food_mappings.yaml file and fill in USDA-searchable names.")
+
+    # Generate/merge mappings (this writes to the yaml file)
+    generate_food_mappings(foods, known_mappings, mappings_output)
+    print(f"\nMappings written to: {mappings_output}")
+
+    if not new_foods:
         print("  All foods already mapped.")
 
 
@@ -136,7 +203,12 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             reports_dir, f"micronutrient-report-{date.today()}.html"
         )
         generate_html_report(result, html_path)
+        latest_path = os.path.join(reports_dir, "latest.html")
+        if os.path.exists(html_path):
+            shutil.copyfile(html_path, latest_path)
         print(f"\nHTML report saved to: {html_path}")
+        print(f"  Latest report copy: {latest_path}")
+
 
 
 def main() -> None:
@@ -162,6 +234,7 @@ def main() -> None:
         help=f"Output path for food_mappings.yaml (default: {DEFAULT_MAPPINGS})",
     )
     import_parser.add_argument("--db", default=None, help=f"Path to TinyDB database (default: {DEFAULT_DB})")
+    import_parser.add_argument("--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})")
 
     # Analyze command
     analyze_parser = subparsers.add_parser(

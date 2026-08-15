@@ -5,3 +5,7 @@ usda_api_key: "YOUR_USDA_API_KEY_HERE"
 output:
   show_amino_acids: true
   show_ok_nutrients: true
+
+# Gemini API configuration for smart food translation (Optional but recommended)
+gemini_api_key: "YOUR_GEMINI_API_KEY_HERE"
+# gemini_model: "gemini-flash-latest"  # default: gemini-flash-latest

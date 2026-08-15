@@ -26,6 +26,8 @@ requests==2.34.2
     # via omni-pilot (pyproject.toml)
 rich==15.0.0
     # via omni-pilot (pyproject.toml)
+tenacity==9.1.4
+    # via omni-pilot (pyproject.toml)
 tinydb==4.9.0
     # via omni-pilot (pyproject.toml)
 urllib3==2.7.0
