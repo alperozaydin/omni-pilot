@@ -9,7 +9,7 @@ MacroFactor tracks calories and macros well, but its micronutrient tracking can 
 ## Key Features
 
 - **MacroFactor Log Parsing:** Reads food logs directly from `.xlsx` exports.
-- **Smart AI Food Translation (Gemini API):** Automatically translates messy German or branded food entries into clean, USDA-searchable generic terms (e.g., `"Bergbauern Käse, Würzig-Nussig"` → `"Cheese"`, `"Burger Cheese"` → `"Cheese"`).
+- **Smart AI Food Translation (Gemini API):** Automatically translates messy German or branded food entries into clean, USDA-searchable generic terms (e.g., `"Bio Haferflocken 500g"` → `"Oats"`, `"Burger Cheese"` → `"Cheese"`).
 - **USDA FoodData Central Enrichment:** Fetches complete micronutrient and essential amino acid profiles.
 - **Local TinyDB Cache:** Caches translations and USDA food profiles in `db/food_db.json` to prevent redundant network calls and enable offline analysis.
 - **Reference Range Comparison:** Evaluates average daily intake against configurable NIH/WHO reference ranges.
