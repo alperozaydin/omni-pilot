@@ -145,3 +145,29 @@ class TestLoadSupplements:
     def test_returns_empty_dict_when_file_missing(self, tmp_path):
         result = load_supplements(str(tmp_path / "nonexistent.yaml"))
         assert result == {}
+
+
+class TestResolvePath:
+    def test_settings_yaml_takes_priority_over_default(self, tmp_path):
+        from omni_pilot.config import resolve_path
+        settings_db = str(tmp_path / "settings_db.json")
+        settings = {"database_path": settings_db}
+        result = resolve_path("database_path", "db/food_db.json", settings)
+        assert result == settings_db
+
+    def test_tilde_expansion_in_settings(self):
+        from omni_pilot.config import resolve_path
+        settings = {"database_path": "~/my_test_dir/food_db.json"}
+        result = resolve_path("database_path", "db/food_db.json", settings)
+        expected = os.path.expanduser("~/my_test_dir/food_db.json")
+        assert result == expected
+
+    def test_fallback_to_default_when_no_setting(self):
+        from omni_pilot.config import resolve_path
+        result = resolve_path("database_path", "db/food_db.json", settings={})
+        assert result == "db/food_db.json"
+
+    def test_fallback_to_default_when_settings_none(self):
+        from omni_pilot.config import resolve_path
+        result = resolve_path("database_path", "db/food_db.json", settings=None)
+        assert result == "db/food_db.json"

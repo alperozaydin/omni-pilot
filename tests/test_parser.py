@@ -52,7 +52,7 @@ class TestExtractUniqueFoods:
 
 
 class TestGenerateFoodMappings:
-    def test_creates_new_mapping_file(self, tmp_path):
+    def test_creates_empty_mappings_when_no_valid_mappings(self, tmp_path):
         output_path = str(tmp_path / "food_mappings.yaml")
         foods = ["Banana", "Haferflocken", "Quick Add"]
         generate_food_mappings(foods, {}, output_path)
@@ -60,18 +60,18 @@ class TestGenerateFoodMappings:
         with open(output_path) as f:
             data = yaml.safe_load(f)
         assert "mappings" in data
-        assert data["mappings"]["Banana"] == ""
-        assert data["mappings"]["Haferflocken"] == ""
-        assert data["mappings"]["Quick Add"] == ""
+        assert data["mappings"] == {}
 
-    def test_preserves_existing_mappings(self, tmp_path):
+    def test_preserves_existing_valid_mappings_only(self, tmp_path):
         output_path = str(tmp_path / "food_mappings.yaml")
         foods = ["Banana", "Haferflocken", "New Food"]
-        existing = {"Banana": "banana", "Haferflocken": "rolled oats"}
+        existing = {"Banana": "banana", "Haferflocken": "rolled oats", "New Food": ""}
         generate_food_mappings(foods, existing, output_path)
 
         with open(output_path) as f:
             data = yaml.safe_load(f)
-        assert data["mappings"]["Banana"] == "banana"
-        assert data["mappings"]["Haferflocken"] == "rolled oats"
-        assert data["mappings"]["New Food"] == ""
+        assert data["mappings"] == {
+            "Banana": "banana",
+            "Haferflocken": "rolled oats",
+        }
+
