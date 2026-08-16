@@ -375,6 +375,103 @@ class TestCLIDatabase:
         assert custom_db.exists()
         assert custom_mappings.exists()
 
+    def test_import_idempotent_does_not_modify_files_mtime(self, tmp_path):
+        import yaml
+        db_path = str(tmp_path / "test_db.json")
+        mappings_path = str(tmp_path / "food_mappings.yaml")
+        settings_path = str(tmp_path / "settings.yaml")
+
+        with open(settings_path, "w") as f:
+            yaml.dump({
+                "database_path": db_path,
+                "mappings_path": mappings_path,
+            }, f)
+
+        # First run: creates files
+        with patch("sys.argv", [
+            "omni_pilot", "import",
+            "data/MacroFactor-example.xlsx",
+            "--settings", settings_path,
+        ]):
+            main()
+
+        assert os.path.exists(mappings_path)
+        assert os.path.exists(db_path)
+
+        # Set specific past timestamps
+        os.utime(mappings_path, (1000000.0, 1000000.0))
+        os.utime(db_path, (1000000.0, 1000000.0))
+        mappings_mtime_before = os.path.getmtime(mappings_path)
+        db_mtime_before = os.path.getmtime(db_path)
+
+        # Second run: everything already mapped
+        with patch("sys.argv", [
+            "omni_pilot", "import",
+            "data/MacroFactor-example.xlsx",
+            "--settings", settings_path,
+        ]):
+            main()
+
+        mappings_mtime_after = os.path.getmtime(mappings_path)
+        db_mtime_after = os.path.getmtime(db_path)
+
+        assert mappings_mtime_after == mappings_mtime_before
+        assert db_mtime_after == db_mtime_before
+
+    @patch("omni_pilot.cli.enrich_all_foods")
+    @patch("omni_pilot.cli.analyze")
+    @patch("omni_pilot.cli.print_terminal_report")
+    @patch("omni_pilot.cli.parse_food_log")
+    def test_analyze_idempotent_does_not_modify_db_mtime(
+        self, mock_parse, mock_print, mock_analyze, mock_enrich, tmp_path
+    ):
+        import yaml
+        db_path = str(tmp_path / "test_db.json")
+        mappings_path = str(tmp_path / "test_mappings.yaml")
+        settings_path = str(tmp_path / "settings.yaml")
+        ref_ranges_path = str(tmp_path / "ref_ranges.yaml")
+
+        with open(mappings_path, "w") as f:
+            yaml.dump({"mappings": {"Apfel": "apple"}}, f)
+        with open(settings_path, "w") as f:
+            yaml.dump({
+                "usda_api_key": "fake_key",
+                "database_path": db_path,
+                "mappings_path": mappings_path,
+            }, f)
+        with open(ref_ranges_path, "w") as f:
+            yaml.dump({"nutrients": {}}, f)
+
+        mock_parse.return_value = [{"food_name": "Apfel"}]
+        mock_enrich.return_value = {"apple": {}}
+        mock_analyze.return_value = {}
+
+        # First run: populates DB
+        with patch("sys.argv", [
+            "omni_pilot", "analyze",
+            "data/MacroFactor-example.xlsx",
+            "--settings", settings_path,
+            "--ref-ranges", ref_ranges_path,
+        ]):
+            main()
+
+        # Set specific past timestamp
+        os.utime(db_path, (1000000.0, 1000000.0))
+        db_mtime_before = os.path.getmtime(db_path)
+
+        # Second run: identical mappings
+        with patch("sys.argv", [
+            "omni_pilot", "analyze",
+            "data/MacroFactor-example.xlsx",
+            "--settings", settings_path,
+            "--ref-ranges", ref_ranges_path,
+        ]):
+            main()
+
+        db_mtime_after = os.path.getmtime(db_path)
+        assert db_mtime_after == db_mtime_before
+
+
 
 
 

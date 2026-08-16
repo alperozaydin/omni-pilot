@@ -135,9 +135,12 @@ def cmd_import(args: argparse.Namespace) -> None:
             print("  Edit the food_mappings.yaml file and fill in USDA-searchable names.")
 
 
-    # Generate/merge mappings (this writes to the yaml file)
-    generate_food_mappings(foods, known_mappings, mappings_output)
-    print(f"\nMappings written to: {mappings_output}")
+    # Generate/merge mappings (only writes if changes are present)
+    written = generate_food_mappings(foods, known_mappings, mappings_output)
+    if written:
+        print(f"\nMappings written to: {mappings_output}")
+    else:
+        print(f"\nMappings are up to date: {mappings_output} (no changes).")
 
     if not new_foods:
         print("  All foods already mapped.")
@@ -183,18 +186,27 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
     
-    # Save all non-empty mappings to database
+    # Save any new or updated non-empty mappings to database
     translations_table = db.table("translations")
+    existing_db_translations = {
+        doc["german"]: doc.get("english", "")
+        for doc in translations_table.all()
+    }
     TranslationQuery = Query()
     saved_count = 0
     for german, english in mappings.items():
         if english and str(english).strip():
-            translations_table.upsert(
-                {"german": german, "english": str(english).strip()},
-                TranslationQuery.german == german
-            )
-            saved_count += 1
-    print(f"  Saved/Updated {saved_count} mappings in the database.")
+            clean_english = str(english).strip()
+            if existing_db_translations.get(german) != clean_english:
+                translations_table.upsert(
+                    {"german": german, "english": clean_english},
+                    TranslationQuery.german == german
+                )
+                saved_count += 1
+    if saved_count > 0:
+        print(f"  Saved/Updated {saved_count} mappings in the database.")
+    else:
+        print("  Database translations up to date (0 updated).")
 
     enriched = enrich_all_foods(food_names, mappings, db, api_key)
 

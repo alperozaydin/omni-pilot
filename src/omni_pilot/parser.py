@@ -92,10 +92,11 @@ def generate_food_mappings(
     foods: list[str],
     existing_mappings: dict[str, str],
     output_path: str,
-) -> None:
+) -> bool:
     """Generate or merge food_mappings.yaml.
 
     Only foods with valid non-empty mappings are saved.
+    Returns True if the file was created or updated, False if it was already up to date.
     """
     merged: dict[str, str] = {}
     for food in sorted(foods):
@@ -106,6 +107,15 @@ def generate_food_mappings(
     for food, mapping in existing_mappings.items():
         if food not in merged and mapping and str(mapping).strip():
             merged[food] = str(mapping).strip()
+
+    if os.path.exists(output_path):
+        try:
+            with open(output_path, "r") as f:
+                existing_file_data = yaml.safe_load(f)
+            if isinstance(existing_file_data, dict) and existing_file_data.get("mappings") == merged:
+                return False
+        except Exception:
+            pass
 
     data = {
         "mappings": merged,
@@ -124,4 +134,6 @@ def generate_food_mappings(
     with open(output_path, "w") as f:
         f.write(header)
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    return True
 
