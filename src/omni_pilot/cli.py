@@ -41,12 +41,43 @@ DEFAULT_DB = "db/food_db.json"
     reraise=True,
 )
 def translate_new_foods(foods_list: list[str], api_key: str, model: str = "gemini-flash-latest") -> list[str]:
-    """Translate and clean a list of foods using Gemini REST API."""
+    """Translate and optimize food queries for USDA FoodData Central search using Gemini REST API."""
     prompt = f"""
-Translate these messy German food entries to English and extract ONLY the most basic, generic ingredient.
-CRITICAL RULES:
-1. Drop ALL brand names, prices, and weights.
-2. DROP meal-specific modifiers and brand-like adjectives (e.g. 'Burger', 'Frozen', 'Crunch'). For example, 'Burger Cheese' MUST become simply 'Cheese'. 'Caramel Crunch Protein Bar' MUST become simply 'Protein bar'.
+You are an expert nutritionist translating food log entries (mostly German or branded) into optimal USDA FoodData Central (SR Legacy and Foundation datasets) search queries.
+
+CRITICAL RULES FOR USDA SEARCH OPTIMIZATION:
+1. USDA TAXONOMY: Format queries to match USDA staple naming conventions so whole staple foods rank #1 over processed byproducts (powders, baby food, crackers, flours, breads).
+2. STATE & FORM: Always specify state ('raw', 'cooked', 'fluid', 'frozen', 'canned') when applicable:
+   - VEGETABLES/FRUITS: 'tomatoes, red, ripe, raw' (never plain 'tomatoes'), 'potatoes, raw', 'vegetables, mixed, frozen, unprepared', 'olives, ripe, canned'.
+   - LIQUID MILK: Must include 'fluid' and fat % (e.g. 'milk, reduced fat, fluid, 2% milkfat' or 'milk, whole, fluid'). Never plain 'milk' or 'low fat milk'.
+   - GRAINS/CEREALS: Specify grain/cereal (e.g. 'rice, white, long-grain, regular, raw', 'rice, brown, long-grain, raw', 'cereals, oats, regular and quick, not fortified, dry'). Never plain 'rice' or 'oats'.
+   - MEAT/POULTRY: Specify whole meat cut (e.g. 'chicken, broilers or fryers, breast, meat only, raw', 'chicken, liver, raw', 'beef, ground, 85% lean, raw'). Never plain 'chicken breast' (matches sliced lunchmeat).
+   - OILS & BUTTER: 'oil, olive, salad or cooking', 'butter, without salt'.
+   - CHEESES: 'cheese, swiss', 'cheese, feta', 'cheese, mozzarella, whole milk', 'cheese, gruyere'.
+3. NOISE CLEANING: Remove prices, package weights, store names (e.g., Rewe, Edeka, Bio, XXL, 250g, 1.29€).
+4. EXCLUSIONS & BASE FOOD MAPPING:
+   - ALWAYS return 'skip' for 'Quick Add', water, and non-food entries (e.g., pill/capsule supplements).
+   - For branded cereals/muesli/granola (e.g., 'Protein Müsli', 'Krunchy Chocolate Chunks'), map to base cereal: 'muesli' or 'cereals ready-to-eat, granola'.
+   - For puddings/desserts (e.g., 'High-Protein-Pudding - Schoko'), map to base dessert: 'puddings, chocolate, ready-to-eat'.
+   - For protein bars/bites, map to: 'protein bar' or 'snacks, granola bars, hard, almond'.
+   - Return 'skip' for ultra-processed plant-based meat substitutes without whole-food equivalents (e.g., 'Like Tender Crunch').
+
+EXAMPLES:
+- "Frische Fettarme Bio Alpenmilch Laktosefrei" -> "milk, reduced fat, fluid, 2% milkfat"
+- "Die Feinen Speisekartoffeln, Qualität I, Festkochend" -> "potatoes, raw, skin"
+- "Haferflocken" -> "cereals, oats, regular and quick, not fortified, dry"
+- "Tomaten" -> "tomatoes, red, ripe, raw, year round average"
+- "Königsgemüse" / "Suppengemüse" -> "vegetables, mixed, frozen, unprepared"
+- "Jasmin-Reis" -> "rice, white, long-grain, regular, raw, unenriched"
+- "Hähnchen Brustfilet" -> "chicken, broilers or fryers, breast, meat only, raw"
+- "Einfach Bio Hackfleisch Rind Zum Braten" -> "beef, ground, raw"
+- "Rinder Rumpsteak" -> "beef, top sirloin, steak, raw"
+- "Oliven Schwarze Oliven" -> "olives, ripe, canned (small-extra large)"
+- "Protein Müsli 2" -> "muesli"
+- "Krunchy Chocolate Chunks Mit Cornflakes" -> "cereals ready-to-eat, granola"
+- "High-Protein-Pudding - Schoko" -> "puddings, chocolate, ready-to-eat"
+- "Like Tender Crunch Original" -> "skip"
+- "Quick Add" -> "skip"
 
 Input foods:
 {json.dumps(foods_list)}
