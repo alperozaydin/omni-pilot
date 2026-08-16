@@ -168,6 +168,33 @@ Install the preconfigured **Omni Pilot** Shortcut to automate the entire import,
 
 ---
 
+## Cross-Device iCloud Synchronization
+
+Omni Pilot shares and synchronizes your food translations and USDA micronutrient cache across your Mac and iPhone using Apple iCloud Drive.
+
+### How to configure:
+
+1. **On your Mac** (`~/Projects/omni-pilot/config/settings.yaml`):
+   Point to your shared iCloud database and mappings files:
+   ```yaml
+   database_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/db/food_db.json"
+   mappings_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/config/food_mappings.yaml"
+   ```
+
+
+2. **On your iPhone** (inside a-Shell / Shortcuts):
+   When running inside `Shortcuts/omni-pilot`, default relative paths are used:
+   ```yaml
+   database_path: "db/food_db.json"
+   mappings_path: "config/food_mappings.yaml"
+   ```
+
+3. **Automatic Creation:**
+   The application expects the database and mappings to live in the cloud. If no database or mappings file exists at the configured cloud path yet, Omni Pilot will automatically create new, empty files at that location and begin populating them on your first import.
+
+---
+
+
 ## Development & Testing
 
 - **Run unit and integration tests:**

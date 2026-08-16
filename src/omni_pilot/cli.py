@@ -18,6 +18,7 @@ from omni_pilot.config import (
     load_reference_ranges,
     load_food_mappings,
     load_supplements,
+    resolve_path,
 )
 from omni_pilot.parser import parse_food_log, extract_unique_foods, generate_food_mappings
 from omni_pilot.enricher import enrich_all_foods
@@ -72,8 +73,14 @@ Input foods:
 def cmd_import(args: argparse.Namespace) -> None:
     """Import MacroFactor xlsx and generate food_mappings.yaml."""
     xlsx_path = args.xlsx_file
-    mappings_output = args.mappings_output or DEFAULT_MAPPINGS
+    settings_path = args.settings or DEFAULT_SETTINGS
+    settings = load_settings(settings_path) if os.path.exists(settings_path) else {}
 
+    db_path = resolve_path("database_path", DEFAULT_DB, settings)
+    mappings_output = resolve_path("mappings_path", DEFAULT_MAPPINGS, settings)
+
+    print(f"Database: {db_path}")
+    print(f"Mappings: {mappings_output}")
     print(f"Parsing {xlsx_path}...")
     entries = parse_food_log(xlsx_path)
     print(f"  Found {len(entries)} food entries.")
@@ -85,21 +92,20 @@ def cmd_import(args: argparse.Namespace) -> None:
     existing_mappings = load_food_mappings(mappings_output)
 
     # Load translations from TinyDB
-    db_path = args.db or DEFAULT_DB
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
     translations_table = db.table("translations")
-    db_mappings = {doc["german"]: doc["english"] for doc in translations_table.all()}
+    db_mappings = {doc["german"]: doc["english"] for doc in translations_table.all() if doc.get("english", "").strip()}
     
-    # Merge mappings: DB takes precedence, then existing YAML
+    # Merge mappings: DB takes precedence, then existing YAML (only non-empty)
     known_mappings = {**existing_mappings, **db_mappings}
+    known_mappings = {k: str(v).strip() for k, v in known_mappings.items() if v and str(v).strip()}
     new_foods = [f for f in foods if f not in known_mappings]
+
 
     if new_foods:
         print(f"  {len(new_foods)} new foods need English equivalents.")
         # Attempt Gemini Translation
-        settings_path = args.settings or DEFAULT_SETTINGS
-        settings = load_settings(settings_path)
         gemini_key = settings.get("gemini_api_key")
         gemini_model = settings.get("gemini_model", "gemini-flash-latest")
         
@@ -119,16 +125,22 @@ def cmd_import(args: argparse.Namespace) -> None:
                                 Query().german == german_food
                             )
                 else:
-                    print("  Warning: Gemini returned a different number of translations than expected.")
+                    print("Error: Gemini returned a different number of translations than expected.")
+                    sys.exit(1)
             except Exception as e:
-                print(f"  Warning: Gemini translation failed: {e}")
+                print(f"Error: Gemini translation failed: {e}")
+                sys.exit(1)
         else:
             print("  No valid gemini_api_key found in settings. Skipping automatic translation.")
             print("  Edit the food_mappings.yaml file and fill in USDA-searchable names.")
 
-    # Generate/merge mappings (this writes to the yaml file)
-    generate_food_mappings(foods, known_mappings, mappings_output)
-    print(f"\nMappings written to: {mappings_output}")
+
+    # Generate/merge mappings (only writes if changes are present)
+    written = generate_food_mappings(foods, known_mappings, mappings_output)
+    if written:
+        print(f"\nMappings written to: {mappings_output}")
+    else:
+        print(f"\nMappings are up to date: {mappings_output} (no changes).")
 
     if not new_foods:
         print("  All foods already mapped.")
@@ -139,19 +151,24 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     xlsx_path = args.xlsx_file
     settings_path = args.settings or DEFAULT_SETTINGS
     ref_ranges_path = args.ref_ranges or DEFAULT_REF_RANGES
-    mappings_path = args.mappings or DEFAULT_MAPPINGS
     supplements_path = args.supplements or DEFAULT_SUPPLEMENTS
-    db_path = args.db or DEFAULT_DB
 
     # Load config
     settings = load_settings(settings_path)
     ref_ranges = load_reference_ranges(ref_ranges_path)
-    mappings = load_food_mappings(mappings_path)
     supplements = load_supplements(supplements_path)
 
+    db_path = resolve_path("database_path", DEFAULT_DB, settings)
+    mappings_path = resolve_path("mappings_path", DEFAULT_MAPPINGS, settings)
+
+    print(f"Database: {db_path}")
+    print(f"Mappings: {mappings_path}")
+
+    mappings = load_food_mappings(mappings_path)
     if not mappings:
         print("Error: No food mappings found. Run 'import' first.")
         sys.exit(1)
+
 
     api_key = settings.get("usda_api_key", "")
     if not api_key:
@@ -169,18 +186,27 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
     
-    # Save all non-empty mappings to database
+    # Save any new or updated non-empty mappings to database
     translations_table = db.table("translations")
+    existing_db_translations = {
+        doc["german"]: doc.get("english", "")
+        for doc in translations_table.all()
+    }
     TranslationQuery = Query()
     saved_count = 0
     for german, english in mappings.items():
         if english and str(english).strip():
-            translations_table.upsert(
-                {"german": german, "english": str(english).strip()},
-                TranslationQuery.german == german
-            )
-            saved_count += 1
-    print(f"  Saved/Updated {saved_count} mappings in the database.")
+            clean_english = str(english).strip()
+            if existing_db_translations.get(german) != clean_english:
+                translations_table.upsert(
+                    {"german": german, "english": clean_english},
+                    TranslationQuery.german == german
+                )
+                saved_count += 1
+    if saved_count > 0:
+        print(f"  Saved/Updated {saved_count} mappings in the database.")
+    else:
+        print("  Database translations up to date (0 updated).")
 
     enriched = enrich_all_foods(food_names, mappings, db, api_key)
 
@@ -229,11 +255,6 @@ def main() -> None:
         "import", help="Import MacroFactor xlsx and generate food mappings"
     )
     import_parser.add_argument("xlsx_file", help="Path to MacroFactor xlsx export")
-    import_parser.add_argument(
-        "--mappings-output", default=None,
-        help=f"Output path for food_mappings.yaml (default: {DEFAULT_MAPPINGS})",
-    )
-    import_parser.add_argument("--db", default=None, help=f"Path to TinyDB database (default: {DEFAULT_DB})")
     import_parser.add_argument("--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})")
 
     # Analyze command
@@ -244,11 +265,9 @@ def main() -> None:
     analyze_parser.add_argument(
         "--html", action="store_true", help="Also generate HTML report"
     )
-    analyze_parser.add_argument("--settings", default=None)
-    analyze_parser.add_argument("--ref-ranges", default=None)
-    analyze_parser.add_argument("--mappings", default=None)
-    analyze_parser.add_argument("--supplements", default=None)
-    analyze_parser.add_argument("--db", default=None)
+    analyze_parser.add_argument("--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})")
+    analyze_parser.add_argument("--ref-ranges", default=None, help=f"Path to reference ranges (default: {DEFAULT_REF_RANGES})")
+    analyze_parser.add_argument("--supplements", default=None, help=f"Path to supplements (default: {DEFAULT_SUPPLEMENTS})")
 
     args = parser.parse_args()
 
@@ -259,3 +278,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

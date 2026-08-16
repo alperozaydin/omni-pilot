@@ -52,7 +52,7 @@ class TestExtractUniqueFoods:
 
 
 class TestGenerateFoodMappings:
-    def test_creates_new_mapping_file(self, tmp_path):
+    def test_creates_empty_mappings_when_no_valid_mappings(self, tmp_path):
         output_path = str(tmp_path / "food_mappings.yaml")
         foods = ["Banana", "Haferflocken", "Quick Add"]
         generate_food_mappings(foods, {}, output_path)
@@ -60,18 +60,40 @@ class TestGenerateFoodMappings:
         with open(output_path) as f:
             data = yaml.safe_load(f)
         assert "mappings" in data
-        assert data["mappings"]["Banana"] == ""
-        assert data["mappings"]["Haferflocken"] == ""
-        assert data["mappings"]["Quick Add"] == ""
+        assert data["mappings"] == {}
 
-    def test_preserves_existing_mappings(self, tmp_path):
+    def test_preserves_existing_valid_mappings_only(self, tmp_path):
         output_path = str(tmp_path / "food_mappings.yaml")
         foods = ["Banana", "Haferflocken", "New Food"]
-        existing = {"Banana": "banana", "Haferflocken": "rolled oats"}
-        generate_food_mappings(foods, existing, output_path)
+        existing = {"Banana": "banana", "Haferflocken": "rolled oats", "New Food": ""}
+        result = generate_food_mappings(foods, existing, output_path)
+        assert result is True
 
         with open(output_path) as f:
             data = yaml.safe_load(f)
-        assert data["mappings"]["Banana"] == "banana"
-        assert data["mappings"]["Haferflocken"] == "rolled oats"
-        assert data["mappings"]["New Food"] == ""
+        assert data["mappings"] == {
+            "Banana": "banana",
+            "Haferflocken": "rolled oats",
+        }
+
+    def test_does_not_modify_file_if_mappings_are_identical(self, tmp_path):
+        import os
+        output_path = str(tmp_path / "food_mappings.yaml")
+        foods = ["Banana", "Haferflocken"]
+        existing = {"Banana": "banana", "Haferflocken": "rolled oats"}
+        # Initial write
+        first_result = generate_food_mappings(foods, existing, output_path)
+        assert first_result is True
+
+        # Set specific old mtime
+        os.utime(output_path, (1000000.0, 1000000.0))
+        mtime_before = os.path.getmtime(output_path)
+
+        # Call again with identical data
+        second_result = generate_food_mappings(foods, existing, output_path)
+        assert second_result is False
+
+        mtime_after = os.path.getmtime(output_path)
+        assert mtime_after == mtime_before
+
+

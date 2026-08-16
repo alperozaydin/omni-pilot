@@ -9,3 +9,12 @@ output:
 # Gemini API configuration for smart food translation (Optional but recommended)
 gemini_api_key: "YOUR_GEMINI_API_KEY_HERE"
 # gemini_model: "gemini-flash-latest"  # default: gemini-flash-latest
+
+# Storage paths (supports ~ and absolute/relative paths)
+database_path: "db/food_db.json"
+mappings_path: "config/food_mappings.yaml"
+# Example for macOS iCloud sync:
+# database_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/db/food_db.json"
+# mappings_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/config/food_mappings.yaml"
+
+

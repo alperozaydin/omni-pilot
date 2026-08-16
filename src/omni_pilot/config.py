@@ -84,3 +84,19 @@ def load_supplements(path: str) -> dict:
         data = yaml.safe_load(f)
     return data if data is not None else {}
 
+
+def resolve_path(
+    setting_key: str,
+    default_path: str,
+    settings: dict | None = None,
+) -> str:
+    """Resolve file path from settings dict with ~ and env expansion, falling back to default_path."""
+    raw_path = settings.get(setting_key, default_path) if settings else default_path
+    resolved = os.path.expanduser(os.path.expandvars(str(raw_path)))
+    parent = os.path.dirname(resolved)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return resolved
+
+
+
