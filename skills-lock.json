@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "pytest": {
+      "source": "alperozaydin/my-skills",
+      "sourceType": "github",
+      "skillPath": "skills/pytest/SKILL.md",
+      "computedHash": "b071b3d1c599d1c68a48a99e7a066eaff9db7aeaf4ce557b070cbb06a04f6579"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://skills.sh/schema.json",
+  "skills": [
+    {
+      "source": "github:alperozaydin/my-skills",
+      "skill": "pytest"
+    }
+  ]
+}
