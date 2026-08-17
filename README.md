@@ -9,7 +9,7 @@ MacroFactor tracks calories and macros well, but its micronutrient tracking can 
 ## Key Features
 
 - **MacroFactor Log Parsing:** Reads food logs directly from `.xlsx` exports.
-- **Smart AI Food Translation (Gemini API):** Automatically translates messy German or branded food entries into clean, USDA-searchable generic terms (e.g., `"Bio Haferflocken 500g"` → `"Oats"`, `"Burger Cheese"` → `"Cheese"`).
+- **Smart AI Food Translation (Gemini API):** Automatically translates messy German or branded food entries into clean, USDA-searchable generic terms (e.g., `"Bio Haferflocken 500g"` → `"cereals, oats, regular and quick, not fortified, dry"`, `"Burger Cheese"` → `"Cheese"`).
 - **USDA FoodData Central Enrichment:** Fetches complete micronutrient and essential amino acid profiles.
 - **Local TinyDB Cache:** Caches translations and USDA food profiles in `db/food_db.json` to prevent redundant network calls and enable offline analysis.
 - **Reference Range Comparison:** Evaluates average daily intake against configurable NIH/WHO reference ranges.
@@ -50,7 +50,7 @@ MacroFactor .xlsx
 ```
 
 1. **Parser:** Extracts food log entries, daily totals, and food weights from MacroFactor `.xlsx`.
-2. **Gemini Translator:** Automatically cleans and maps new food entries in a single batch REST request, saving mappings to TinyDB and `config/food_mappings.yaml`.
+2. **Gemini Translator:** Automatically cleans and translates new food entries on the fly, saving mappings to TinyDB and `config/food_mappings.yaml`.
 3. **USDA Enricher:** Looks up mapped generic names in the USDA database and caches nutrient data in `db/food_db.json`.
 4. **Analyzer:** Computes daily micronutrient averages, merges daily supplements, and evaluates intake against targets.
 5. **Reporter:** Renders color-coded status tables (🟢 OK, 🟡 Low, 🔴 Deficient, 🟠 High) in terminal and exports standalone HTML reports.
@@ -103,17 +103,8 @@ output:
 
 ## Desktop Usage
 
-### 1. Import Food Log
-Imports your MacroFactor export and uses Gemini to automatically translate and map new foods:
-
-```bash
-make import FILE=data/MacroFactor-Export.xlsx
-# or
-PYTHONPATH=src uv run python -m omni_pilot.cli import "data/MacroFactor-Export.xlsx"
-```
-
-### 2. Run Analysis & Generate Report
-Fetches USDA micronutrients, calculates daily intake vs targets, and generates an HTML report:
+### Run Analysis & Generate Report
+A single autonomous command parses your log, translates any new foods with Gemini, enriches them with USDA data, and generates terminal/HTML reports:
 
 ```bash
 make analyze FILE=data/MacroFactor-Export.xlsx
@@ -150,7 +141,6 @@ Whenever you want to run Omni Pilot directly in a-Shell:
 ```bash
 jump omni-pilot
 export PYTHONPATH=src
-python -m omni_pilot.cli import "data/data.xlsx"
 python -m omni_pilot.cli analyze "data/data.xlsx" --html
 view reports/latest.html
 ```
@@ -161,7 +151,7 @@ view reports/latest.html
 
 ### C. Automated iOS Shortcut
 
-Install the preconfigured **Omni Pilot** Shortcut to automate the entire import, analysis, and preview workflow directly from your iOS Share Sheet:
+Install the preconfigured **Omni Pilot** Shortcut to automate the entire analysis and preview workflow directly from your iOS Share Sheet:
 
 - **iCloud Link:** [Install Omni Pilot Shortcut](https://www.icloud.com/shortcuts/74960fb7132a438fb2cdec58b9ac8439)
 - **Local File:** [`shortcuts/Omni-Pilot.shortcut`](shortcuts/Omni-Pilot.shortcut)
@@ -181,7 +171,6 @@ Omni Pilot shares and synchronizes your food translations and USDA micronutrient
    mappings_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/config/food_mappings.yaml"
    ```
 
-
 2. **On your iPhone** (inside a-Shell / Shortcuts):
    When running inside `Shortcuts/omni-pilot`, default relative paths are used:
    ```yaml
@@ -190,10 +179,9 @@ Omni Pilot shares and synchronizes your food translations and USDA micronutrient
    ```
 
 3. **Automatic Creation:**
-   The application expects the database and mappings to live in the cloud. If no database or mappings file exists at the configured cloud path yet, Omni Pilot will automatically create new, empty files at that location and begin populating them on your first import.
+   The application expects the database and mappings to live in the cloud. If no database or mappings file exists at the configured cloud path yet, Omni Pilot will automatically create new, empty files at that location and begin populating them on your first run.
 
 ---
-
 
 ## Development & Testing
 
