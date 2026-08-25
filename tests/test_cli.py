@@ -97,7 +97,10 @@ class TestCLIAnalyze:
         with open(ref_ranges_path, "w") as f:
             yaml.dump({"nutrients": {}}, f)
 
-        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}])
+        mocker.patch(
+            "omni_pilot.cli.parse_food_log",
+            return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
+        )
         mocker.patch("omni_pilot.cli.enrich_all_foods", return_value={"Apfel": {}})
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")
@@ -137,7 +140,10 @@ class TestCLIAnalyze:
         with open(ref_ranges_path, "w") as f:
             yaml.dump({"nutrients": {}}, f)
 
-        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}])
+        mocker.patch(
+            "omni_pilot.cli.parse_food_log",
+            return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
+        )
         mocker.patch("omni_pilot.cli.enrich_all_foods", return_value={"Apfel": {}})
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")
@@ -173,7 +179,10 @@ class TestCLIAnalyze:
         with open(ref_ranges_path, "w") as f:
             yaml.dump({"nutrients": {}}, f)
 
-        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}])
+        mocker.patch(
+            "omni_pilot.cli.parse_food_log",
+            return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
+        )
         mocker.patch("omni_pilot.cli.enrich_all_foods", return_value={"Apfel": {}})
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")

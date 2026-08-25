@@ -117,9 +117,19 @@ def main() -> None:
     analyze_parser.add_argument(
         "--html", action="store_true", help="Also generate HTML report"
     )
-    analyze_parser.add_argument("--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})")
-    analyze_parser.add_argument("--ref-ranges", default=None, help=f"Path to reference ranges (default: {DEFAULT_REF_RANGES})")
-    analyze_parser.add_argument("--supplements", default=None, help=f"Path to supplements (default: {DEFAULT_SUPPLEMENTS})")
+    analyze_parser.add_argument(
+        "--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})"
+    )
+    analyze_parser.add_argument(
+        "--ref-ranges",
+        default=None,
+        help=f"Path to reference ranges (default: {DEFAULT_REF_RANGES})",
+    )
+    analyze_parser.add_argument(
+        "--supplements",
+        default=None,
+        help=f"Path to supplements (default: {DEFAULT_SUPPLEMENTS})",
+    )
 
     args = parser.parse_args()
 

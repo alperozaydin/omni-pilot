@@ -130,7 +130,11 @@ def resolve_and_sync_mappings(
                                 Query().german == german_food,
                             )
                 else:
-                    logger.warning("Gemini returned a different number of translations (%d) than expected (%d).", len(translations), len(new_foods))
+                    logger.warning(
+                        "Gemini returned a different number of translations (%d) than expected (%d).",
+                        len(translations),
+                        len(new_foods),
+                    )
             except Exception as e:
                 logger.warning("Gemini translation failed: %s. Proceeding with unresolved items.", e)
         else:
