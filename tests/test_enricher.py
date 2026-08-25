@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-import pytest
-from unittest.mock import patch, MagicMock
 from tinydb import TinyDB
 
 from omni_pilot.enricher import (
@@ -76,9 +73,9 @@ class TestGetFoodMicros:
         result = get_food_micros("Boiled Eggs", "boiled egg", db, "fake-key")
         assert result["vitamin_a_mcg"] == 149.0
 
-    @patch("omni_pilot.enricher.search_usda")
-    def test_queries_usda_when_not_cached(self, mock_search, tmp_path):
+    def test_queries_usda_when_not_cached(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
+        mock_search = mocker.patch("omni_pilot.enricher.search_usda")
         mock_search.return_value = {
             "description": "Egg, whole, cooked, hard-boiled",
             "fdcId": 173424,
@@ -92,19 +89,19 @@ class TestGetFoodMicros:
         assert result["vitamin_a_mcg"] == 149.0
         mock_search.assert_called_once_with("boiled egg", "fake-key")
 
-    @patch("omni_pilot.enricher.search_usda")
-    def test_returns_none_when_usda_has_no_results(self, mock_search, tmp_path):
+    def test_returns_none_when_usda_has_no_results(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
+        mock_search = mocker.patch("omni_pilot.enricher.search_usda")
         mock_search.return_value = None
         result = get_food_micros("Unknown Food", "unknown food", db, "fake-key")
         assert result is None
 
 
 class TestEnrichAllFoods:
-    @patch("omni_pilot.enricher.get_food_micros")
-    def test_skips_foods_mapped_to_skip(self, mock_get, tmp_path):
+    def test_skips_foods_mapped_to_skip(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
         mappings = {"Quick Add": "skip", "Boiled Eggs": "boiled egg"}
+        mock_get = mocker.patch("omni_pilot.enricher.get_food_micros")
         mock_get.return_value = {"vitamin_a_mcg": 149.0}
 
         result = enrich_all_foods(
@@ -115,10 +112,10 @@ class TestEnrichAllFoods:
         # get_food_micros should only be called for Boiled Eggs
         mock_get.assert_called_once()
 
-    @patch("omni_pilot.enricher.get_food_micros")
-    def test_uses_original_name_when_mapping_empty(self, mock_get, tmp_path):
+    def test_uses_original_name_when_mapping_empty(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
         mappings = {"Boiled Eggs": ""}
+        mock_get = mocker.patch("omni_pilot.enricher.get_food_micros")
         mock_get.return_value = {"vitamin_a_mcg": 149.0}
 
         enrich_all_foods(["Boiled Eggs"], mappings, db, "fake-key")
