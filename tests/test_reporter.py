@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import os
-import pytest
 
-from omni_pilot.reporter import print_terminal_report, generate_html_report
+from omni_pilot.reporter import generate_html_report, print_terminal_report
 
 
 def _make_analysis_result() -> dict:

@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from tinydb import TinyDB, Query
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tinydb import Query, TinyDB
 
 from omni_pilot.config import load_food_mappings
 from omni_pilot.parser import generate_food_mappings

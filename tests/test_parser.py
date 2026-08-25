@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from omni_pilot.parser import parse_food_log, extract_unique_foods, generate_food_mappings
+from omni_pilot.parser import extract_unique_foods, generate_food_mappings, parse_food_log
 
 
 class TestParseFoodLog:

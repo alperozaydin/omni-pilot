@@ -1,4 +1,4 @@
-.PHONY: help analyze test sync-iphone
+.PHONY: help analyze test lint lint-fix sync-iphone
 
 ICLOUD_DEST := $(HOME)/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/omni-pilot
 
@@ -6,6 +6,8 @@ help:
 	@echo "Available commands:"
 	@echo "  make analyze FILE=<path> - Analyze micronutrient intake (with HTML report)"
 	@echo "  make test                - Run tests with pytest"
+	@echo "  make lint                - Lint code with ruff"
+	@echo "  make lint-fix            - Lint and auto-fix issues with ruff"
 	@echo "  make sync-iphone         - Sync repo code to iCloud for the a-Shell (iPhone) copy"
 
 analyze:
@@ -17,6 +19,12 @@ endif
 
 test:
 	uv run pytest
+
+lint:
+	uv run ruff check .
+
+lint-fix:
+	uv run ruff check --fix .
 
 sync-iphone:
 	uv pip compile pyproject.toml -o requirements.txt

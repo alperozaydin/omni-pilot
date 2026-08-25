@@ -8,7 +8,6 @@ from typing import TypedDict
 import openpyxl
 import yaml
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -110,7 +109,7 @@ def generate_food_mappings(
 
     if os.path.exists(output_path):
         try:
-            with open(output_path, "r") as f:
+            with open(output_path) as f:
                 existing_file_data = yaml.safe_load(f)
             if isinstance(existing_file_data, dict) and existing_file_data.get("mappings") == merged:
                 return False

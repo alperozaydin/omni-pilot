@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import os
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
-from jinja2 import Template
 
+from jinja2 import Template
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 # Status emoji and color mapping
 STATUS_DISPLAY = {

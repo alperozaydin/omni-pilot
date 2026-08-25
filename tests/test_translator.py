@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+
 import pytest
 import requests
-from tinydb import TinyDB
 import yaml
+from tinydb import TinyDB
 
-from omni_pilot.translator import translate_new_foods, resolve_and_sync_mappings
+from omni_pilot.translator import resolve_and_sync_mappings, translate_new_foods
 
 
 def test_translate_new_foods_success(mocker):

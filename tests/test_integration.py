@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import os
-import pytest
-from tinydb import TinyDB
 
-from omni_pilot.parser import parse_food_log, extract_unique_foods
-from omni_pilot.enricher import enrich_all_foods
+import pytest
+
 from omni_pilot.analyzer import analyze
 from omni_pilot.config import load_reference_ranges
-from omni_pilot.reporter import print_terminal_report, generate_html_report
-
+from omni_pilot.parser import extract_unique_foods, parse_food_log
+from omni_pilot.reporter import generate_html_report, print_terminal_report
 
 XLSX_PATH = "data/MacroFactor-example.xlsx"
 REF_RANGES_PATH = "config/reference_ranges.yaml"

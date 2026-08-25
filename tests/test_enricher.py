@@ -4,10 +4,9 @@ from tinydb import TinyDB
 
 from omni_pilot.enricher import (
     USDA_NUTRIENT_MAP,
-    search_usda,
+    enrich_all_foods,
     extract_micros_from_usda,
     get_food_micros,
-    enrich_all_foods,
 )
 
 

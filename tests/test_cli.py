@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import os
+
 import pytest
-from tinydb import TinyDB
 import yaml
+from tinydb import TinyDB
 
 from omni_pilot.cli import main
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+
 import yaml
 
 
@@ -12,7 +13,7 @@ def load_settings(path: str) -> dict:
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Settings file not found: {path}")
-    with open(path, "r") as f:
+    with open(path) as f:
         return yaml.safe_load(f)
 
 
@@ -23,7 +24,7 @@ def load_reference_ranges(path: str) -> dict:
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Reference ranges file not found: {path}")
-    with open(path, "r") as f:
+    with open(path) as f:
         return yaml.safe_load(f)
 
 
@@ -34,7 +35,7 @@ def load_food_mappings(path: str) -> dict[str, str]:
     """
     if not os.path.exists(path):
         return {}
-    with open(path, "r") as f:
+    with open(path) as f:
         data = yaml.safe_load(f)
     if data is None or "mappings" not in data:
         return {}
@@ -80,7 +81,7 @@ def load_supplements(path: str) -> dict:
     """
     if not os.path.exists(path):
         return {}
-    with open(path, "r") as f:
+    with open(path) as f:
         data = yaml.safe_load(f)
     return data if data is not None else {}
 

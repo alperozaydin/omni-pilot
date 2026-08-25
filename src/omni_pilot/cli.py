@@ -10,17 +10,17 @@ from datetime import date
 
 from tinydb import TinyDB
 
+from omni_pilot.analyzer import analyze
 from omni_pilot.config import (
-    load_settings,
     load_reference_ranges,
+    load_settings,
     load_supplements,
     resolve_path,
 )
-from omni_pilot.parser import parse_food_log, extract_unique_foods
-from omni_pilot.translator import resolve_and_sync_mappings
 from omni_pilot.enricher import enrich_all_foods
-from omni_pilot.analyzer import analyze
-from omni_pilot.reporter import print_terminal_report, generate_html_report
+from omni_pilot.parser import extract_unique_foods, parse_food_log
+from omni_pilot.reporter import generate_html_report, print_terminal_report
+from omni_pilot.translator import resolve_and_sync_mappings
 
 logger = logging.getLogger(__name__)
 

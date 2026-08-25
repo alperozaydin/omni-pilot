@@ -6,7 +6,7 @@ import time
 from datetime import date
 
 import requests
-from tinydb import TinyDB, Query
+from tinydb import Query, TinyDB
 
 logger = logging.getLogger(__name__)
 
