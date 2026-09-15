@@ -55,6 +55,9 @@ def _summary_line(nutrients: dict) -> str:
         f"{counts['deficient']} deficient",
         f"{counts['high']} high",
     ]
+    floor_count = sum(1 for n in nutrients.values() if n["is_floor"])
+    if floor_count:
+        parts.append(f"{floor_count} from partial data")
     return " · ".join(parts)
 
 
@@ -117,13 +120,19 @@ def print_terminal_report(result: dict, settings: dict) -> None:
         table.add_column("Daily Avg", justify="right", min_width=10)
         table.add_column("Target", justify="right", min_width=10)
         table.add_column("Status", justify="center", min_width=12)
+        table.add_column("Data", justify="right", min_width=7)
 
         for key, n in category_nutrients:
             emoji, label, color = STATUS_DISPLAY.get(
                 n["status"], ("⚪", "Unknown", "dim")
             )
+            if n["is_floor"]:
+                label = f"{label}*"
             target_str = (
                 f"{n['target']:.1f}" if n["target"] is not None else "—"
+            )
+            coverage_str = (
+                f"{n['coverage_pct']:.1f}%" if n["coverage_pct"] is not None else "—"
             )
             status_text = Text(f"{emoji} {label}", style=color)
             table.add_row(
@@ -132,9 +141,17 @@ def print_terminal_report(result: dict, settings: dict) -> None:
                 f"{n['daily_avg']:.1f}",
                 target_str,
                 status_text,
+                coverage_str,
             )
 
         console.print(table)
+        console.print()
+
+    if any(n["is_floor"] for n in nutrients.values()):
+        console.print(
+            "  * computed from partial USDA data — the true value can only be higher",
+            style="dim",
+        )
         console.print()
 
     # Warnings
