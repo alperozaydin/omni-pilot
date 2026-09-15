@@ -215,7 +215,16 @@ HTML_TEMPLATE = """\
     <div class="category">
         <h2>{{ category }}</h2>
         <table>
-            <thead><tr><th>Nutrient</th><th>Unit</th><th>Daily Avg</th><th>Target</th><th>Status</th><th>Data</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>Nutrient</th>
+                    <th>Unit</th>
+                    <th>Daily Avg</th>
+                    <th>Target</th>
+                    <th>Status</th>
+                    <th>Data</th>
+                </tr>
+            </thead>
             <tbody>
             {% for n in category_nutrients %}
             <tr>
@@ -224,7 +233,9 @@ HTML_TEMPLATE = """\
                 <td>{{ "%.1f"|format(n.daily_avg) }}</td>
                 <td>{{ "%.1f"|format(n.target) if n.target is not none else "—" }}</td>
                 <td class="status-{{ n.status }}">{{ n.status_label }}</td>
-                <td class="data-col">{% if n.coverage_pct is not none %}{{ "%.1f"|format(n.coverage_pct) }}%{% else %}—{% endif %}</td>
+                <td class="data-col">
+                    {% if n.coverage_pct is not none %}{{ "%.1f"|format(n.coverage_pct) }}%{% else %}—{% endif %}
+                </td>
             </tr>
             {% endfor %}
             </tbody>
