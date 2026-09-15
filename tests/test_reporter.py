@@ -105,6 +105,20 @@ class TestTerminalReport:
         captured = capsys.readouterr()
         assert "1 from partial data" in captured.out
 
+    def test_unmeasured_nutrient_shows_dash_in_data_column(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
+        settings = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+        result = _make_analysis_result()
+        result["nutrients"]["vitamin_a_mcg"]["coverage_pct"] = None
+        print_terminal_report(result, settings)
+        captured = capsys.readouterr()
+        matching_lines = [
+            line for line in captured.out.splitlines() if "Vitamin A" in line
+        ]
+        assert len(matching_lines) == 1
+        assert "900.0" in matching_lines[0]
+        assert "—" in matching_lines[0]
+
 
 class TestHtmlReport:
     def test_generates_valid_html_file(self, tmp_path):
@@ -124,7 +138,7 @@ class TestHtmlReport:
         generate_html_report(result, output_path)
         with open(output_path) as f:
             html = f.read()
-        assert "<th>Data</th>" in html
+        assert '<th class="data-col">Data</th>' in html
         assert "68.7%" in html
         assert "Deficient*" in html
         assert html.count("computed from partial USDA data") == 1
@@ -137,4 +151,15 @@ class TestHtmlReport:
             html = f.read()
         assert "computed from partial USDA data" not in html
         assert "Deficient*" not in html
+
+    def test_html_report_renders_dash_for_unmeasured_nutrient(self, tmp_path):
+        result = _make_analysis_result()
+        result["nutrients"]["vitamin_a_mcg"]["coverage_pct"] = None
+        output_path = str(tmp_path / "report.html")
+        generate_html_report(result, output_path)
+        with open(output_path) as f:
+            html = f.read()
+        assert '<th class="data-col">Data</th>' in html
+        assert '<td class="data-col">\n                    —\n                </td>' in html
+
 

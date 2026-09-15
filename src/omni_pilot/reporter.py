@@ -222,7 +222,7 @@ HTML_TEMPLATE = """\
                     <th>Daily Avg</th>
                     <th>Target</th>
                     <th>Status</th>
-                    <th>Data</th>
+                    <th class="data-col">Data</th>
                 </tr>
             </thead>
             <tbody>
