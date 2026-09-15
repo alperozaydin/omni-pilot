@@ -19,6 +19,8 @@ class NutrientResult(TypedDict):
     ul: float | None
     status: str
     pct_of_target: float | None
+    coverage_pct: float | None
+    is_floor: bool
 
 
 class CoverageResult(TypedDict):
@@ -78,8 +80,12 @@ def analyze(
     2. Sum per day
     3. Average across days
     4. Compare against reference ranges
+
+    Coverage is tracked per reference nutrient key: a food with no USDA value
+    for a nutrient — or, for a combined nutrient, missing any one component —
+    contributes nothing to it, and its weight is booked as unmeasured rather
+    than silently as 0.0.
     """
-    # Track coverage
     total_entries = len(entries)
     mapped_entries = 0
     skipped_entries = 0
@@ -90,8 +96,11 @@ def analyze(
     # Collect all nutrient keys from reference_ranges
     nutrient_keys = list(ref_ranges["nutrients"].keys())
 
-    # Daily totals: date -> nutrient_key -> total
+    # Daily totals: date -> reference nutrient key -> total (components combined)
     daily_totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    # Reference nutrient key -> consumed grams that did / did not have a USDA value
+    measured_weight_g: dict[str, float] = defaultdict(float)
+    unmeasured_weight_g: dict[str, float] = defaultdict(float)
     dates: set[str] = set()
 
     for entry in entries:
@@ -99,7 +108,8 @@ def analyze(
         food_micros = enriched.get(food_name)
 
         if food_micros is None:
-            # If the key exists in enriched but is None, it was explicitly skipped
+            # A deliberate "skip" mapping and a failed USDA lookup are the same
+            # None here (BAR-42). Both are excluded from coverage on both sides.
             if food_name in enriched:
                 skipped_entries += 1
                 skipped_food_names.add(food_name)
@@ -114,18 +124,28 @@ def analyze(
         total_weight_g = entry["total_weight_g"]
         scale_factor = total_weight_g / 100.0
 
-        # Add scaled nutrients to daily totals
-        for nutrient_key in food_micros:
-            value = food_micros.get(nutrient_key)
-            if value is not None:
-                # USDA provides EPA and DHA in grams, but our reference target is in mg
-                if nutrient_key in ("omega3_epa_mg", "omega3_dha_mg"):
-                    value *= 1000.0
-                daily_totals[entry_date][nutrient_key] += value * scale_factor
+        for nutrient_key in nutrient_keys:
+            component_keys = COMBINED_NUTRIENTS.get(nutrient_key, [nutrient_key])
+            component_values = [food_micros.get(ck) for ck in component_keys]
+
+            if any(value is None for value in component_values):
+                unmeasured_weight_g[nutrient_key] += total_weight_g
+                continue
+
+            measured_weight_g[nutrient_key] += total_weight_g
+            # USDA provides EPA and DHA in grams, but our reference target is in mg
+            contribution = sum(
+                value * 1000.0 if ck in ("omega3_epa_mg", "omega3_dha_mg") else value
+                for ck, value in zip(component_keys, component_values)
+            )
+            daily_totals[entry_date][nutrient_key] += contribution * scale_factor
 
     # Compute daily averages
     num_days = len(dates) if dates else 1
     sorted_dates = sorted(dates)
+
+    if supplements is None:
+        supplements = {}
 
     # Build nutrient results
     nutrients_result: dict[str, NutrientResult] = {}
@@ -134,27 +154,22 @@ def analyze(
         nutrient_info = ref_ranges["nutrients"][nutrient_key]
         target, ul, target_type = get_nutrient_target(nutrient_key, ref_ranges)
 
-        # Determine which enricher keys to sum for this reference key
-        if nutrient_key in COMBINED_NUTRIENTS:
-            component_keys = COMBINED_NUTRIENTS[nutrient_key]
-        else:
-            component_keys = [nutrient_key]
-
-        # Sum across days, then average
-        total_across_days = 0.0
-        for d in sorted_dates:
-            day_total = sum(
-                daily_totals[d].get(ck, 0.0) for ck in component_keys
-            )
-            total_across_days += day_total
-
+        total_across_days = sum(
+            daily_totals[d].get(nutrient_key, 0.0) for d in sorted_dates
+        )
         daily_avg = total_across_days / num_days if num_days > 0 else 0.0
 
-        if supplements is None:
-            supplements = {}
-            
-        # Add supplement contribution
+        # Add supplement contribution. Supplements carry no weight, so they do
+        # not participate in coverage.
         daily_avg += supplements.get(nutrient_key, 0.0)
+
+        measured = measured_weight_g.get(nutrient_key, 0.0)
+        unmeasured = unmeasured_weight_g.get(nutrient_key, 0.0)
+        attributable = measured + unmeasured
+        # Rounded once, here: the "*" rule and the displayed figure must agree.
+        coverage_pct = (
+            round(100.0 * measured / attributable, 1) if attributable > 0 else None
+        )
 
         # Determine status
         if target is not None:
@@ -163,6 +178,13 @@ def analyze(
         else:
             status = "unknown"
             pct = None
+
+        # Absent data can only raise a value, so only low/deficient are unsafe.
+        is_floor = (
+            coverage_pct is not None
+            and coverage_pct < 100.0
+            and status in ("low", "deficient")
+        )
 
         nutrients_result[nutrient_key] = NutrientResult(
             name=nutrient_info["name"],
@@ -173,6 +195,8 @@ def analyze(
             ul=ul,
             status=status,
             pct_of_target=round(pct, 1) if pct is not None else None,
+            coverage_pct=coverage_pct,
+            is_floor=is_floor,
         )
 
     return AnalysisResult(
