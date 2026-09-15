@@ -117,3 +117,24 @@ class TestHtmlReport:
         assert "<html" in html
         assert "Vitamin A" in html
         assert "Micronutrient Analysis Report" in html
+
+    def test_html_report_shows_coverage_and_floor_marker(self, tmp_path):
+        result = _make_analysis_result()
+        output_path = str(tmp_path / "report.html")
+        generate_html_report(result, output_path)
+        with open(output_path) as f:
+            html = f.read()
+        assert "<th>Data</th>" in html
+        assert "68.7%" in html
+        assert "Deficient*" in html
+        assert html.count("computed from partial USDA data") == 1
+
+    def test_html_report_omits_footnote_when_no_floor(self, tmp_path):
+        result = _make_analysis_result_without_floor()
+        output_path = str(tmp_path / "report.html")
+        generate_html_report(result, output_path)
+        with open(output_path) as f:
+            html = f.read()
+        assert "computed from partial USDA data" not in html
+        assert "Deficient*" not in html
+

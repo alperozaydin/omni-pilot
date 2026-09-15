@@ -197,6 +197,8 @@ HTML_TEMPLATE = """\
         .status-low { color: #ffd93d; }
         .status-deficient { color: #ff6b6b; }
         .status-high { color: #ff9f43; }
+        .data-col { text-align: right; color: #8892b0; }
+        .footnote { margin-top: 1rem; color: #8892b0; font-size: 0.85rem; }
         .warnings { margin-top: 2rem; padding: 1rem; background: #16213e; border-radius: 8px; }
         .warnings p { margin: 0.3rem 0; font-size: 0.9rem; }
     </style>
@@ -213,7 +215,7 @@ HTML_TEMPLATE = """\
     <div class="category">
         <h2>{{ category }}</h2>
         <table>
-            <thead><tr><th>Nutrient</th><th>Unit</th><th>Daily Avg</th><th>Target</th><th>Status</th></tr></thead>
+            <thead><tr><th>Nutrient</th><th>Unit</th><th>Daily Avg</th><th>Target</th><th>Status</th><th>Data</th></tr></thead>
             <tbody>
             {% for n in category_nutrients %}
             <tr>
@@ -222,6 +224,7 @@ HTML_TEMPLATE = """\
                 <td>{{ "%.1f"|format(n.daily_avg) }}</td>
                 <td>{{ "%.1f"|format(n.target) if n.target is not none else "—" }}</td>
                 <td class="status-{{ n.status }}">{{ n.status_label }}</td>
+                <td class="data-col">{% if n.coverage_pct is not none %}{{ "%.1f"|format(n.coverage_pct) }}%{% else %}—{% endif %}</td>
             </tr>
             {% endfor %}
             </tbody>
@@ -229,6 +232,9 @@ HTML_TEMPLATE = """\
     </div>
     {% endif %}
     {% endfor %}
+    {% if has_floor %}
+    <p class="footnote">* computed from partial USDA data — the true value can only be higher</p>
+    {% endif %}
     {% if skipped_foods or unresolved_foods %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
@@ -255,6 +261,8 @@ def generate_html_report(result: dict, output_path: str) -> None:
                 emoji, label, _ = STATUS_DISPLAY.get(
                     n["status"], ("⚪", "Unknown", "dim")
                 )
+                if n["is_floor"]:
+                    label = f"{label}*"
                 n["status_label"] = f"{emoji} {label}"
                 cat_nutrients.append(n)
         categories.append((category, cat_nutrients))
@@ -265,6 +273,7 @@ def generate_html_report(result: dict, output_path: str) -> None:
         summary=_summary_line(nutrients),
         coverage_line=_coverage_line(coverage),
         categories=categories,
+        has_floor=any(n["is_floor"] for n in nutrients.values()),
         skipped_foods=coverage["skipped_foods"],
         unresolved_foods=coverage["unresolved_foods"],
     )
@@ -272,3 +281,4 @@ def generate_html_report(result: dict, output_path: str) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w") as f:
         f.write(html)
+
