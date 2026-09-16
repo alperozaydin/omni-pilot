@@ -180,10 +180,10 @@ def analyze(
             pct = None
 
         # Absent data can only raise a value, so only low/deficient are unsafe.
-        is_floor = (
-            coverage_pct is not None
-            and coverage_pct < 100.0
-            and status in ("low", "deficient")
+        # Unknown coverage (None) is marked too: no attributable weight at all is
+        # less supportable than 0% coverage, not more.
+        is_floor = status in ("low", "deficient") and (
+            coverage_pct is None or coverage_pct < 100.0
         )
 
         nutrients_result[nutrient_key] = NutrientResult(

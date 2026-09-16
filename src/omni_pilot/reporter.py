@@ -115,12 +115,16 @@ def print_terminal_report(result: dict, settings: dict) -> None:
                 continue
 
         table = Table(title=f"── {category} ──", show_header=True, expand=True)
-        table.add_column("Nutrient", style="bold", min_width=30)
-        table.add_column("Unit", justify="center", min_width=6)
-        table.add_column("Daily Avg", justify="right", min_width=10)
-        table.add_column("Target", justify="right", min_width=10)
+        # Widths are sized so the whole row, Data column included, survives an
+        # 80-column terminal (a-Shell on iPhone). The coverage figure is the
+        # deliverable here, so it must not be the first thing a narrow terminal
+        # clips.
+        table.add_column("Nutrient", style="bold", min_width=18)
+        table.add_column("Unit", justify="center", min_width=4)
+        table.add_column("Daily Avg", justify="right", min_width=9)
+        table.add_column("Target", justify="right", min_width=6)
         table.add_column("Status", justify="center", min_width=12)
-        table.add_column("Data", justify="right", min_width=7)
+        table.add_column("Data", justify="right", min_width=6)
 
         for key, n in category_nutrients:
             emoji, label, color = STATUS_DISPLAY.get(

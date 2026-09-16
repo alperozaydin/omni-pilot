@@ -200,6 +200,47 @@ class TestCoverageAccounting:
         assert combined["daily_avg"] == pytest.approx(1.8)
         assert combined["coverage_pct"] == 100.0
 
+    def test_combined_epa_dha_converts_grams_to_mg(self):
+        # USDA stores EPA and DHA in grams, but the reference target is in mg.
+        # CLAUDE.md names this unit mismatch as an invariant to guard.
+        entries = [{"date": "2026-08-09", "food_name": "Salmon", "total_weight_g": 100.0}]
+        enriched = {"Salmon": {"omega3_epa_mg": 0.69, "omega3_dha_mg": 1.46}}
+        ref_ranges = {
+            "demographic": {},
+            "nutrients": {
+                "omega3_epa_dha_mg": {
+                    "name": "Omega-3 (EPA + DHA)", "unit": "mg", "type": "ai",
+                    "ai": 250, "ul": None,
+                },
+            },
+        }
+        result = analyze(entries, enriched, ref_ranges)
+        omega3 = result["nutrients"]["omega3_epa_dha_mg"]
+        # (0.69 + 1.46) g/100g * 1000 = 2150 mg over a 100 g serving.
+        assert omega3["daily_avg"] == pytest.approx(2150.0)
+        assert omega3["coverage_pct"] == 100.0
+        assert omega3["status"] == "ok"
+
+    def test_combined_epa_dha_with_one_component_missing_contributes_nothing(self):
+        entries = [{"date": "2026-08-09", "food_name": "Lean Beef", "total_weight_g": 400.0}]
+        enriched = {"Lean Beef": {"omega3_epa_mg": 0.02, "omega3_dha_mg": None}}
+        ref_ranges = {
+            "demographic": {},
+            "nutrients": {
+                "omega3_epa_dha_mg": {
+                    "name": "Omega-3 (EPA + DHA)", "unit": "mg", "type": "ai",
+                    "ai": 250, "ul": None,
+                },
+            },
+        }
+        result = analyze(entries, enriched, ref_ranges)
+        omega3 = result["nutrients"]["omega3_epa_dha_mg"]
+        # The BAR-41 headline case: the measured EPA half is no longer added on
+        # its own, so no 80 mg "deficient" verdict gets manufactured.
+        assert omega3["daily_avg"] == pytest.approx(0.0)
+        assert omega3["coverage_pct"] == 0.0
+        assert omega3["is_floor"] is True
+
     def test_measured_zero_counts_as_measured(self):
         entries = [{"date": "2026-08-09", "food_name": "Egg White", "total_weight_g": 250.0}]
         enriched = {"Egg White": {"vitamin_k_mcg": 0.0}}
@@ -388,3 +429,36 @@ class TestFloorMarking:
         assert vit_d["coverage_pct"] == 70.0
         assert vit_d["status"] == "ok"
         assert vit_d["is_floor"] is False
+
+    def test_is_floor_set_when_coverage_is_unknown(self):
+        # No attributable weight at all (bad API key, every food skipped, empty
+        # range) is less supportable than 0% coverage, so the verdict is marked.
+        entries = [{"date": "2026-08-09", "food_name": "Quick Add", "total_weight_g": 100.0}]
+        enriched = {"Quick Add": None}
+        ref_ranges = {
+            "demographic": {},
+            "nutrients": {
+                "calcium_mg": {"name": "Calcium", "unit": "mg", "type": "rda", "rda": 1000, "ul": 2500},
+            },
+        }
+        result = analyze(entries, enriched, ref_ranges)
+        calcium = result["nutrients"]["calcium_mg"]
+        assert calcium["coverage_pct"] is None
+        assert calcium["status"] == "deficient"
+        assert calcium["is_floor"] is True
+
+    def test_is_floor_not_set_when_coverage_unknown_and_status_safe(self):
+        entries = [{"date": "2026-08-09", "food_name": "Quick Add", "total_weight_g": 100.0}]
+        enriched = {"Quick Add": None}
+        ref_ranges = {
+            "demographic": {},
+            "nutrients": {
+                "calcium_mg": {"name": "Calcium", "unit": "mg", "type": "rda", "rda": 1000, "ul": 2500},
+            },
+        }
+        supplements = {"calcium_mg": 1200.0}
+        result = analyze(entries, enriched, ref_ranges, supplements=supplements)
+        calcium = result["nutrients"]["calcium_mg"]
+        assert calcium["coverage_pct"] is None
+        assert calcium["status"] == "ok"
+        assert calcium["is_floor"] is False
