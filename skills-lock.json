@@ -6,12 +6,6 @@
       "sourceType": "github",
       "skillPath": "skills/pytest/SKILL.md",
       "computedHash": "b071b3d1c599d1c68a48a99e7a066eaff9db7aeaf4ce557b070cbb06a04f6579"
-    },
-    "spec-acceptance": {
-      "source": "alperozaydin/my-skills",
-      "sourceType": "github",
-      "skillPath": "skills/spec-acceptance/SKILL.md",
-      "computedHash": "8c5e4c60e813108a51c0a3c038800e8bea5bfbc8acca4232bb0bbf2587f23686"
     }
   }
 }

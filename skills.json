@@ -4,10 +4,6 @@
     {
       "source": "github:alperozaydin/my-skills",
       "skill": "pytest"
-    },
-    {
-      "source": "github:alperozaydin/my-skills",
-      "skill": "spec-acceptance"
     }
   ]
 }
