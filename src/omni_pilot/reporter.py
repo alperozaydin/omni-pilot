@@ -55,6 +55,9 @@ def _summary_line(nutrients: dict) -> str:
         f"{counts['deficient']} deficient",
         f"{counts['high']} high",
     ]
+    floor_count = sum(1 for n in nutrients.values() if n["is_floor"])
+    if floor_count:
+        parts.append(f"{floor_count} from partial data")
     return " · ".join(parts)
 
 
@@ -112,18 +115,28 @@ def print_terminal_report(result: dict, settings: dict) -> None:
                 continue
 
         table = Table(title=f"── {category} ──", show_header=True, expand=True)
-        table.add_column("Nutrient", style="bold", min_width=30)
-        table.add_column("Unit", justify="center", min_width=6)
-        table.add_column("Daily Avg", justify="right", min_width=10)
-        table.add_column("Target", justify="right", min_width=10)
+        # Widths are sized so the whole row, Data column included, survives an
+        # 80-column terminal (a-Shell on iPhone). The coverage figure is the
+        # deliverable here, so it must not be the first thing a narrow terminal
+        # clips.
+        table.add_column("Nutrient", style="bold", min_width=18)
+        table.add_column("Unit", justify="center", min_width=4)
+        table.add_column("Daily Avg", justify="right", min_width=9)
+        table.add_column("Target", justify="right", min_width=6)
         table.add_column("Status", justify="center", min_width=12)
+        table.add_column("Data", justify="right", min_width=6)
 
         for key, n in category_nutrients:
             emoji, label, color = STATUS_DISPLAY.get(
                 n["status"], ("⚪", "Unknown", "dim")
             )
+            if n["is_floor"]:
+                label = f"{label}*"
             target_str = (
                 f"{n['target']:.1f}" if n["target"] is not None else "—"
+            )
+            coverage_str = (
+                f"{n['coverage_pct']:.1f}%" if n["coverage_pct"] is not None else "—"
             )
             status_text = Text(f"{emoji} {label}", style=color)
             table.add_row(
@@ -132,9 +145,17 @@ def print_terminal_report(result: dict, settings: dict) -> None:
                 f"{n['daily_avg']:.1f}",
                 target_str,
                 status_text,
+                coverage_str,
             )
 
         console.print(table)
+        console.print()
+
+    if any(n["is_floor"] for n in nutrients.values()):
+        console.print(
+            "  * computed from partial USDA data — the true value can only be higher",
+            style="dim",
+        )
         console.print()
 
     # Warnings
@@ -180,6 +201,8 @@ HTML_TEMPLATE = """\
         .status-low { color: #ffd93d; }
         .status-deficient { color: #ff6b6b; }
         .status-high { color: #ff9f43; }
+        .data-col { text-align: right; color: #8892b0; }
+        .footnote { margin-top: 1rem; color: #8892b0; font-size: 0.85rem; }
         .warnings { margin-top: 2rem; padding: 1rem; background: #16213e; border-radius: 8px; }
         .warnings p { margin: 0.3rem 0; font-size: 0.9rem; }
     </style>
@@ -196,7 +219,16 @@ HTML_TEMPLATE = """\
     <div class="category">
         <h2>{{ category }}</h2>
         <table>
-            <thead><tr><th>Nutrient</th><th>Unit</th><th>Daily Avg</th><th>Target</th><th>Status</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>Nutrient</th>
+                    <th>Unit</th>
+                    <th>Daily Avg</th>
+                    <th>Target</th>
+                    <th>Status</th>
+                    <th class="data-col">Data</th>
+                </tr>
+            </thead>
             <tbody>
             {% for n in category_nutrients %}
             <tr>
@@ -205,6 +237,9 @@ HTML_TEMPLATE = """\
                 <td>{{ "%.1f"|format(n.daily_avg) }}</td>
                 <td>{{ "%.1f"|format(n.target) if n.target is not none else "—" }}</td>
                 <td class="status-{{ n.status }}">{{ n.status_label }}</td>
+                <td class="data-col">
+                    {% if n.coverage_pct is not none %}{{ "%.1f"|format(n.coverage_pct) }}%{% else %}—{% endif %}
+                </td>
             </tr>
             {% endfor %}
             </tbody>
@@ -212,6 +247,9 @@ HTML_TEMPLATE = """\
     </div>
     {% endif %}
     {% endfor %}
+    {% if has_floor %}
+    <p class="footnote">* computed from partial USDA data — the true value can only be higher</p>
+    {% endif %}
     {% if skipped_foods or unresolved_foods %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
@@ -238,6 +276,8 @@ def generate_html_report(result: dict, output_path: str) -> None:
                 emoji, label, _ = STATUS_DISPLAY.get(
                     n["status"], ("⚪", "Unknown", "dim")
                 )
+                if n["is_floor"]:
+                    label = f"{label}*"
                 n["status_label"] = f"{emoji} {label}"
                 cat_nutrients.append(n)
         categories.append((category, cat_nutrients))
@@ -248,6 +288,7 @@ def generate_html_report(result: dict, output_path: str) -> None:
         summary=_summary_line(nutrients),
         coverage_line=_coverage_line(coverage),
         categories=categories,
+        has_floor=any(n["is_floor"] for n in nutrients.values()),
         skipped_foods=coverage["skipped_foods"],
         unresolved_foods=coverage["unresolved_foods"],
     )
@@ -255,3 +296,4 @@ def generate_html_report(result: dict, output_path: str) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w") as f:
         f.write(html)
+
