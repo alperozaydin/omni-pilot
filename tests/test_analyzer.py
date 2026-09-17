@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from omni_pilot.analyzer import analyze, determine_status
+from tests.helpers import enrichment
 
 
 class TestDetermineStatus:
@@ -71,7 +72,7 @@ class TestAnalyze:
             "Eggs": {"vitamin_a_mcg": 149.0, "calcium_mg": 50.0},
         }
         ref_ranges = self._make_ref_ranges()
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
 
         assert result["period"]["days"] == 2
         # 200g of eggs per day -> 149 * (200/100) = 298 mcg vitamin A per day
@@ -88,13 +89,37 @@ class TestAnalyze:
         ]
         enriched = {
             "Eggs": {"vitamin_a_mcg": 149.0, "calcium_mg": 50.0},
-            "Quick Add": None,
         }
         ref_ranges = self._make_ref_ranges()
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched, skipped={"Quick Add"}), ref_ranges)
 
         assert result["coverage"]["mapped_entries"] == 1
         assert result["coverage"]["skipped_entries"] == 1
+
+    def test_failed_lookup_reported_as_unresolved_not_skipped(self):
+        entries = [
+            self._make_entry("Eggs", "2026-07-13", 200.0),
+            self._make_entry("Lachs", "2026-07-13", 300.0),
+            self._make_entry("Water", "2026-07-13", 500.0),
+        ]
+        result = analyze(
+            entries,
+            enrichment(
+                {"Eggs": {"vitamin_a_mcg": 149.0, "calcium_mg": 50.0}},
+                skipped={"Water"},
+                unresolved={"Lachs"},
+            ),
+            self._make_ref_ranges(),
+        )
+
+        coverage = result["coverage"]
+        # "You told it to ignore this" and "your data has a hole" are different
+        # report lines; a failed lookup must not read as an intentional skip.
+        assert coverage["mapped_entries"] == 1
+        assert coverage["skipped_entries"] == 1
+        assert coverage["skipped_foods"] == ["Water"]
+        assert coverage["unresolved_entries"] == 1
+        assert coverage["unresolved_foods"] == ["Lachs"]
 
     def test_unmeasured_nutrient_reports_zero_coverage(self):
         entries = [self._make_entry("Eggs", "2026-07-13", 200.0)]
@@ -102,7 +127,7 @@ class TestAnalyze:
             "Eggs": {"vitamin_a_mcg": 149.0, "calcium_mg": None},
         }
         ref_ranges = self._make_ref_ranges()
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
 
         vit_a = result["nutrients"]["vitamin_a_mcg"]
         assert vit_a["daily_avg"] == pytest.approx(298.0)
@@ -123,7 +148,7 @@ class TestAnalyze:
             "Milk": {"vitamin_a_mcg": 50.0, "calcium_mg": 120.0},
         }
         ref_ranges = self._make_ref_ranges()
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
 
         # Day total: Eggs 200g * 149/100 + Milk 300g * 50/100 = 298 + 150 = 448
         vit_a = result["nutrients"]["vitamin_a_mcg"]
@@ -145,7 +170,7 @@ class TestAnalyzeSupplements:
         }
         supplements = {"vitamin_c_mg": 50.0}
         
-        result = analyze(entries, enriched, ref_ranges, supplements=supplements)
+        result = analyze(entries, enrichment(enriched), ref_ranges, supplements=supplements)
         # 5.0 from food + 50.0 from supplement
         assert result["nutrients"]["vitamin_c_mg"]["daily_avg"] == 55.0
 
@@ -159,7 +184,7 @@ class TestAnalyzeSupplements:
             }
         }
         
-        result = analyze(entries, enriched, ref_ranges, supplements=None)
+        result = analyze(entries, enrichment(enriched), ref_ranges, supplements=None)
         assert result["nutrients"]["vitamin_c_mg"]["daily_avg"] == 5.0
 
 
@@ -176,7 +201,7 @@ class TestCoverageAccounting:
                 },
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         combined = result["nutrients"]["methionine_cysteine_g"]
         # The methionine half is NOT added — a partial sum is an invented number.
         assert combined["daily_avg"] == pytest.approx(0.0)
@@ -194,7 +219,7 @@ class TestCoverageAccounting:
                 },
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         combined = result["nutrients"]["methionine_cysteine_g"]
         # 200g * (0.6 + 0.3) / 100 = 1.8g
         assert combined["daily_avg"] == pytest.approx(1.8)
@@ -214,7 +239,7 @@ class TestCoverageAccounting:
                 },
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         omega3 = result["nutrients"]["omega3_epa_dha_mg"]
         # (0.69 + 1.46) g/100g * 1000 = 2150 mg over a 100 g serving.
         assert omega3["daily_avg"] == pytest.approx(2150.0)
@@ -233,7 +258,7 @@ class TestCoverageAccounting:
                 },
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         omega3 = result["nutrients"]["omega3_epa_dha_mg"]
         # The BAR-41 headline case: the measured EPA half is no longer added on
         # its own, so no 80 mg "deficient" verdict gets manufactured.
@@ -250,7 +275,7 @@ class TestCoverageAccounting:
                 "vitamin_k_mcg": {"name": "Vitamin K", "unit": "mcg", "type": "ai", "ai": 120, "ul": None},
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         vit_k = result["nutrients"]["vitamin_k_mcg"]
         # 0.0 means "USDA measured it and found none" — that is data, not absence.
         assert vit_k["daily_avg"] == pytest.approx(0.0)
@@ -271,7 +296,7 @@ class TestCoverageAccounting:
                 "choline_mg": {"name": "Choline", "unit": "mg", "type": "ai", "ai": 550, "ul": 3500},
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         choline = result["nutrients"]["choline_mg"]
         # 300g of 400g consumed = 75%. Counting foods would say 50%.
         assert choline["coverage_pct"] == 75.0
@@ -283,7 +308,6 @@ class TestCoverageAccounting:
         ]
         enriched = {
             "Eggs": {"vitamin_a_mcg": 149.0},
-            "Quick Add": None,
         }
         ref_ranges = {
             "demographic": {},
@@ -291,7 +315,7 @@ class TestCoverageAccounting:
                 "vitamin_a_mcg": {"name": "Vitamin A", "unit": "mcg", "type": "rda", "rda": 900, "ul": 3000},
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched, skipped={"Quick Add"}), ref_ranges)
         vit_a = result["nutrients"]["vitamin_a_mcg"]
         # A logged glass of water must not read as "unmeasured vitamin A".
         assert vit_a["coverage_pct"] == 100.0
@@ -299,14 +323,13 @@ class TestCoverageAccounting:
 
     def test_coverage_none_when_no_resolved_entries(self):
         entries = [{"date": "2026-08-09", "food_name": "Quick Add", "total_weight_g": 100.0}]
-        enriched = {"Quick Add": None}
         ref_ranges = {
             "demographic": {},
             "nutrients": {
                 "vitamin_a_mcg": {"name": "Vitamin A", "unit": "mcg", "type": "rda", "rda": 900, "ul": 3000},
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(skipped={"Quick Add"}), ref_ranges)
         # No weight was attributable at all — distinct from "measured, found nothing".
         assert result["nutrients"]["vitamin_a_mcg"]["coverage_pct"] is None
 
@@ -321,7 +344,7 @@ class TestCoverageAccounting:
                 "unobtainium_mg": {"name": "Unobtainium", "unit": "mg", "type": "ai", "ai": 10, "ul": None},
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         unobtainium = result["nutrients"]["unobtainium_mg"]
         assert unobtainium["daily_avg"] == pytest.approx(0.0)
         assert unobtainium["coverage_pct"] == 0.0
@@ -361,7 +384,7 @@ class TestFloorMarking:
         }
         ref_ranges = {"demographic": {}, "nutrients": {key: nutrient_config}}
 
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         nutrient = result["nutrients"][key]
         assert nutrient["status"] == expected_status
         assert nutrient["coverage_pct"] == 80.0
@@ -376,7 +399,7 @@ class TestFloorMarking:
                 "vitamin_k_mcg": {"name": "Vitamin K", "unit": "mcg", "type": "ai", "ai": 120, "ul": None},
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         vit_k = result["nutrients"]["vitamin_k_mcg"]
         assert vit_k["status"] == "low"
         assert vit_k["coverage_pct"] == 100.0
@@ -399,7 +422,7 @@ class TestFloorMarking:
                 "vitamin_e_mg": {"name": "Vitamin E", "unit": "mg", "type": "rda", "rda": 15, "ul": 1000},
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
         vit_e = result["nutrients"]["vitamin_e_mg"]
         assert vit_e["status"] == "low"
         assert vit_e["coverage_pct"] == 100.0
@@ -422,7 +445,7 @@ class TestFloorMarking:
         }
         supplements = {"vitamin_d_mcg": 10.0}
 
-        result = analyze(entries, enriched, ref_ranges, supplements=supplements)
+        result = analyze(entries, enrichment(enriched), ref_ranges, supplements=supplements)
         vit_d = result["nutrients"]["vitamin_d_mcg"]
         # 10.0 from food + 10.0 from the supplement clears the 15.0 target, so the
         # verdict becomes safe and the marker drops even at 70% coverage.
@@ -434,14 +457,13 @@ class TestFloorMarking:
         # No attributable weight at all (bad API key, every food skipped, empty
         # range) is less supportable than 0% coverage, so the verdict is marked.
         entries = [{"date": "2026-08-09", "food_name": "Quick Add", "total_weight_g": 100.0}]
-        enriched = {"Quick Add": None}
         ref_ranges = {
             "demographic": {},
             "nutrients": {
                 "calcium_mg": {"name": "Calcium", "unit": "mg", "type": "rda", "rda": 1000, "ul": 2500},
             },
         }
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(skipped={"Quick Add"}), ref_ranges)
         calcium = result["nutrients"]["calcium_mg"]
         assert calcium["coverage_pct"] is None
         assert calcium["status"] == "deficient"
@@ -449,7 +471,6 @@ class TestFloorMarking:
 
     def test_is_floor_not_set_when_coverage_unknown_and_status_safe(self):
         entries = [{"date": "2026-08-09", "food_name": "Quick Add", "total_weight_g": 100.0}]
-        enriched = {"Quick Add": None}
         ref_ranges = {
             "demographic": {},
             "nutrients": {
@@ -457,7 +478,7 @@ class TestFloorMarking:
             },
         }
         supplements = {"calcium_mg": 1200.0}
-        result = analyze(entries, enriched, ref_ranges, supplements=supplements)
+        result = analyze(entries, enrichment(skipped={"Quick Add"}), ref_ranges, supplements=supplements)
         calcium = result["nutrients"]["calcium_mg"]
         assert calcium["coverage_pct"] is None
         assert calcium["status"] == "ok"

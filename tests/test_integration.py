@@ -8,6 +8,7 @@ from omni_pilot.analyzer import analyze
 from omni_pilot.config import load_reference_ranges
 from omni_pilot.parser import extract_unique_foods, parse_food_log
 from omni_pilot.reporter import generate_html_report, print_terminal_report
+from tests.helpers import enrichment
 
 XLSX_PATH = "data/MacroFactor-example.xlsx"
 REF_RANGES_PATH = "config/reference_ranges.yaml"
@@ -71,7 +72,7 @@ class TestIntegration:
         enriched = {food: dummy_micros for food in foods}
 
         ref_ranges = load_reference_ranges(REF_RANGES_PATH)
-        result = analyze(entries, enriched, ref_ranges)
+        result = analyze(entries, enrichment(enriched), ref_ranges)
 
         assert result["period"]["days"] > 0
         assert result["coverage"]["mapped_entries"] > 0

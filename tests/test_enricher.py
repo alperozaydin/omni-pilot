@@ -106,10 +106,36 @@ class TestEnrichAllFoods:
         result = enrich_all_foods(
             ["Quick Add", "Boiled Eggs"], mappings, db, "fake-key"
         )
-        assert result["Quick Add"] is None
-        assert result["Boiled Eggs"] == {"vitamin_a_mcg": 149.0}
+        assert result["skipped"] == {"Quick Add"}
+        assert result["unresolved"] == set()
+        assert "Quick Add" not in result["profiles"]
+        assert result["profiles"]["Boiled Eggs"] == {"vitamin_a_mcg": 149.0}
         # get_food_micros should only be called for Boiled Eggs
         mock_get.assert_called_once()
+
+    def test_failed_usda_lookup_is_unresolved_not_skipped(self, mocker, tmp_path):
+        # Only the network seam is faked, so the real get_food_micros and
+        # enrich_all_foods produce the shape the pipeline actually sees.
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.search_usda", return_value=None)
+
+        result = enrich_all_foods(["Lachs"], {"Lachs": "salmon"}, db, "fake-key")
+
+        assert result["unresolved"] == {"Lachs"}
+        assert result["skipped"] == set()
+        assert "Lachs" not in result["profiles"]
+
+    def test_profiles_never_contain_none(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.search_usda", return_value=None)
+        mappings = {"Quick Add": "skip", "Lachs": "salmon"}
+
+        result = enrich_all_foods(["Quick Add", "Lachs"], mappings, db, "fake-key")
+
+        # Neither outcome may leak into profiles as a None value — that
+        # overloading is what made the two indistinguishable.
+        assert None not in result["profiles"].values()
+        assert result["profiles"] == {}
 
     def test_uses_original_name_when_mapping_empty(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))

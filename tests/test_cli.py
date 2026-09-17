@@ -8,6 +8,7 @@ import yaml
 from tinydb import TinyDB
 
 from omni_pilot.cli import main
+from tests.helpers import enrichment
 
 
 class TestCLIHelp:
@@ -57,7 +58,7 @@ class TestCLIAnalyze:
             "omni_pilot.translator.translate_new_foods",
             side_effect=lambda foods, api_key, *args, **kwargs: [f"Mock {food}" for food in foods],
         )
-        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value={})
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")
 
@@ -101,7 +102,7 @@ class TestCLIAnalyze:
             "omni_pilot.cli.parse_food_log",
             return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
         )
-        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value={"Apfel": {}})
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Apfel": {}}))
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")
         mock_html = mocker.patch("omni_pilot.cli.generate_html_report")
@@ -119,6 +120,47 @@ class TestCLIAnalyze:
         call_path = mock_html.call_args[0][1]
         assert "reports/micronutrient-report-" in call_path
         assert call_path.endswith(".html")
+
+    def test_analyze_reports_resolved_count_from_profiles_only(self, mocker, tmp_path, capsys):
+        """Only foods with a USDA profile count as resolved — not skips or failed lookups."""
+        settings_path = str(tmp_path / "settings.yaml")
+        ref_ranges_path = str(tmp_path / "ref_ranges.yaml")
+        with open(settings_path, "w") as f:
+            yaml.dump({
+                "usda_api_key": "fake_key",
+                "database_path": str(tmp_path / "db.json"),
+                "mappings_path": str(tmp_path / "mappings.yaml"),
+            }, f)
+        with open(ref_ranges_path, "w") as f:
+            yaml.dump({"nutrients": {}}, f)
+
+        mocker.patch(
+            "omni_pilot.cli.parse_food_log",
+            return_value=[
+                {"food_name": name, "total_weight_g": 100.0, "date": "2026-08-01"}
+                for name in ("Apfel", "Wasser", "Lachs")
+            ],
+        )
+        mocker.patch(
+            "omni_pilot.cli.resolve_and_sync_mappings",
+            return_value={"Apfel": "apple", "Wasser": "skip", "Lachs": "salmon"},
+        )
+        mocker.patch(
+            "omni_pilot.cli.enrich_all_foods",
+            return_value=enrichment({"Apfel": {}}, skipped={"Wasser"}, unresolved={"Lachs"}),
+        )
+        mocker.patch("omni_pilot.cli.analyze", return_value={})
+        mocker.patch("omni_pilot.cli.print_terminal_report")
+
+        mocker.patch("sys.argv", [
+            "omni_pilot", "analyze",
+            "data/MacroFactor-example.xlsx",
+            "--settings", settings_path,
+            "--ref-ranges", ref_ranges_path,
+        ])
+        main()
+
+        assert "1/3 foods resolved." in capsys.readouterr().out
 
     def test_analyze_resolves_db_and_mappings_from_settings(self, mocker, tmp_path):
         """Test custom database and mappings paths from settings."""
@@ -144,7 +186,7 @@ class TestCLIAnalyze:
             "omni_pilot.cli.parse_food_log",
             return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
         )
-        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value={"Apfel": {}})
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Apfel": {}}))
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")
 
@@ -183,7 +225,7 @@ class TestCLIAnalyze:
             "omni_pilot.cli.parse_food_log",
             return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
         )
-        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value={"Apfel": {}})
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Apfel": {}}))
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")
 
