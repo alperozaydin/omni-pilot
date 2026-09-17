@@ -4,11 +4,25 @@ from __future__ import annotations
 import logging
 import time
 from datetime import date
+from typing import TypedDict
 
 import requests
 from tinydb import Query, TinyDB
 
 logger = logging.getLogger(__name__)
+
+
+class EnrichmentResult(TypedDict):
+    """Outcome of enriching a set of foods.
+
+    "Deliberately skipped" and "USDA lookup failed" are different facts and are
+    kept in separate sets, so profiles never carries None for either.
+    """
+
+    profiles: dict[str, dict[str, float | None]]
+    skipped: set[str]
+    unresolved: set[str]
+
 
 # Maps our internal nutrient keys to USDA nutrient numbers.
 # Numbers verified against USDA FoodData Central SR Legacy dataset.
@@ -170,19 +184,19 @@ def enrich_all_foods(
     mappings: dict[str, str],
     db: TinyDB,
     api_key: str,
-) -> dict[str, dict[str, float | None] | None]:
+) -> EnrichmentResult:
     """Enrich all foods with USDA micro data.
 
-    Returns a dict mapping food names to their per-100g micro profiles.
-    Foods mapped to "skip" get None.
+    Resolved foods go into profiles, foods mapped to "skip" into skipped, and
+    foods whose USDA lookup failed into unresolved.
     """
-    result: dict[str, dict[str, float | None] | None] = {}
+    result: EnrichmentResult = {"profiles": {}, "skipped": set(), "unresolved": set()}
 
     for food_name in food_names:
         mapping = mappings.get(food_name, "")
 
         if mapping == "skip":
-            result[food_name] = None
+            result["skipped"].add(food_name)
             logger.info("Skipping '%s' (mapped to 'skip')", food_name)
             continue
 
@@ -191,11 +205,13 @@ def enrich_all_foods(
         micros = get_food_micros(food_name, query, db, api_key)
 
         if micros is None:
+            result["unresolved"].add(food_name)
             logger.warning(
                 "Could not resolve '%s' (query: '%s') — marking as unresolved",
                 food_name, query,
             )
+            continue
 
-        result[food_name] = micros
+        result["profiles"][food_name] = micros
 
     return result

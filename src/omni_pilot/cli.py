@@ -69,13 +69,12 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     print("Enriching foods with USDA data...")
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
-    enriched = enrich_all_foods(food_names, mappings, db, api_key)
-    resolved = sum(1 for v in enriched.values() if v is not None)
-    print(f"  {resolved}/{len(food_names)} foods resolved.")
+    enrichment = enrich_all_foods(food_names, mappings, db, api_key)
+    print(f"  {len(enrichment['profiles'])}/{len(food_names)} foods resolved.")
 
     # 4. Analyze Micronutrient Intake
     print("Analyzing micronutrient intake...")
-    result = analyze(entries, enriched, ref_ranges, supplements=supplements)
+    result = analyze(entries, enrichment, ref_ranges, supplements=supplements)
 
     # 5. Report
     print()

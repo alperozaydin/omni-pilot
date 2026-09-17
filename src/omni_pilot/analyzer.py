@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import TypedDict
 
 from omni_pilot.config import get_nutrient_target
+from omni_pilot.enricher import EnrichmentResult
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def determine_status(value: float, target: float, ul: float | None) -> str:
 
 def analyze(
     entries: list[dict],
-    enriched: dict[str, dict[str, float | None] | None],
+    enrichment: EnrichmentResult,
     ref_ranges: dict,
     supplements: dict | None = None,
 ) -> AnalysisResult:
@@ -103,14 +104,16 @@ def analyze(
     unmeasured_weight_g: dict[str, float] = defaultdict(float)
     dates: set[str] = set()
 
+    profiles = enrichment["profiles"]
+
     for entry in entries:
         food_name = entry["food_name"]
-        food_micros = enriched.get(food_name)
+        food_micros = profiles.get(food_name)
 
         if food_micros is None:
-            # A deliberate "skip" mapping and a failed USDA lookup are the same
-            # None here (BAR-42). Both are excluded from coverage on both sides.
-            if food_name in enriched:
+            # Skipped and unresolved foods are both excluded from coverage on
+            # both sides; they differ only in how the report labels them.
+            if food_name in enrichment["skipped"]:
                 skipped_entries += 1
                 skipped_food_names.add(food_name)
             else:
