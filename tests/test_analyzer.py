@@ -483,3 +483,73 @@ class TestFloorMarking:
         assert calcium["coverage_pct"] is None
         assert calcium["status"] == "ok"
         assert calcium["is_floor"] is False
+
+
+class TestLowConfidenceCoverage:
+    REF_RANGES = {
+        "demographic": {},
+        "nutrients": {
+            "vitamin_a_mcg": {"name": "Vitamin A", "unit": "mcg", "type": "rda", "rda": 900, "ul": 3000},
+        },
+    }
+
+    def test_weak_foods_listed_by_grams_eaten(self):
+        entries = [
+            {"date": "2026-08-09", "food_name": "Caprese", "total_weight_g": 200.0},
+            {"date": "2026-08-09", "food_name": "Feta Salat", "total_weight_g": 300.0},
+            {"date": "2026-08-10", "food_name": "Feta Salat", "total_weight_g": 200.0},
+            {"date": "2026-08-10", "food_name": "Eggs", "total_weight_g": 300.0},
+        ]
+        profiles = {name: {"vitamin_a_mcg": 10.0} for name in ("Caprese", "Feta Salat", "Eggs")}
+        low_confidence = {
+            "Caprese": {"usda_name": "Fish, tuna salad", "macro_distance": 1.5},
+            "Feta Salat": {"usda_name": "Cheese, feta", "macro_distance": None},
+        }
+
+        result = analyze(entries, enrichment(profiles, low_confidence=low_confidence), self.REF_RANGES)
+
+        coverage = result["coverage"]
+        assert coverage["low_confidence_foods"] == [
+            {"name": "Feta Salat", "usda_name": "Cheese, feta", "macro_distance": None, "grams": 500.0},
+            {"name": "Caprese", "usda_name": "Fish, tuna salad", "macro_distance": 1.5, "grams": 200.0},
+        ]
+        # 700 g of 1000 g analysed
+        assert coverage["low_confidence_weight_pct"] == 70.0
+
+    def test_weak_foods_still_count_toward_nutrients(self):
+        entries = [{"date": "2026-08-09", "food_name": "Caprese", "total_weight_g": 200.0}]
+        low_confidence = {"Caprese": {"usda_name": "Fish, tuna salad", "macro_distance": 1.5}}
+
+        result = analyze(
+            entries,
+            enrichment({"Caprese": {"vitamin_a_mcg": 10.0}}, low_confidence=low_confidence),
+            self.REF_RANGES,
+        )
+
+        assert result["nutrients"]["vitamin_a_mcg"]["daily_avg"] == pytest.approx(20.0)
+
+    def test_denominator_excludes_skipped_and_unresolved_weight(self):
+        entries = [
+            {"date": "2026-08-09", "food_name": "Caprese", "total_weight_g": 100.0},
+            {"date": "2026-08-09", "food_name": "Eggs", "total_weight_g": 100.0},
+            {"date": "2026-08-09", "food_name": "Water", "total_weight_g": 500.0},
+            {"date": "2026-08-09", "food_name": "Lachs", "total_weight_g": 300.0},
+        ]
+        low_confidence = {"Caprese": {"usda_name": "Fish, tuna salad", "macro_distance": 1.5}}
+
+        result = analyze(
+            entries,
+            enrichment(
+                {"Caprese": {"vitamin_a_mcg": 10.0}, "Eggs": {"vitamin_a_mcg": 10.0}},
+                skipped={"Water"}, unresolved={"Lachs"}, low_confidence=low_confidence,
+            ),
+            self.REF_RANGES,
+        )
+
+        assert result["coverage"]["low_confidence_weight_pct"] == 50.0
+
+    def test_no_weak_foods_and_no_analysed_weight(self):
+        entries = [{"date": "2026-08-09", "food_name": "Water", "total_weight_g": 500.0}]
+        result = analyze(entries, enrichment(skipped={"Water"}), self.REF_RANGES)
+        assert result["coverage"]["low_confidence_foods"] == []
+        assert result["coverage"]["low_confidence_weight_pct"] == 0.0

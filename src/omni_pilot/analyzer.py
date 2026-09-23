@@ -24,6 +24,13 @@ class NutrientResult(TypedDict):
     is_floor: bool
 
 
+class LowConfidenceFood(TypedDict):
+    name: str
+    usda_name: str
+    macro_distance: float | None
+    grams: float
+
+
 class CoverageResult(TypedDict):
     total_food_entries: int
     mapped_entries: int
@@ -31,6 +38,8 @@ class CoverageResult(TypedDict):
     unresolved_entries: int
     skipped_foods: list[str]
     unresolved_foods: list[str]
+    low_confidence_foods: list[LowConfidenceFood]
+    low_confidence_weight_pct: float
 
 
 class PeriodResult(TypedDict):
@@ -102,6 +111,9 @@ def analyze(
     # Reference nutrient key -> consumed grams that did / did not have a USDA value
     measured_weight_g: dict[str, float] = defaultdict(float)
     unmeasured_weight_g: dict[str, float] = defaultdict(float)
+    # Consumed grams of all analysed entries, and of weakly matched foods
+    analysed_weight_g = 0.0
+    low_confidence_weight_g: dict[str, float] = defaultdict(float)
     dates: set[str] = set()
 
     profiles = enrichment["profiles"]
@@ -126,6 +138,9 @@ def analyze(
         dates.add(entry_date)
         total_weight_g = entry["total_weight_g"]
         scale_factor = total_weight_g / 100.0
+        analysed_weight_g += total_weight_g
+        if food_name in enrichment["low_confidence"]:
+            low_confidence_weight_g[food_name] += total_weight_g
 
         for nutrient_key in nutrient_keys:
             component_keys = COMBINED_NUTRIENTS.get(nutrient_key, [nutrient_key])
@@ -202,6 +217,23 @@ def analyze(
             is_floor=is_floor,
         )
 
+    low_confidence_foods = sorted(
+        (
+            LowConfidenceFood(
+                name=food_name,
+                usda_name=enrichment["low_confidence"][food_name]["usda_name"],
+                macro_distance=enrichment["low_confidence"][food_name]["macro_distance"],
+                grams=grams,
+            )
+            for food_name, grams in low_confidence_weight_g.items()
+        ),
+        key=lambda food: (-food["grams"], food["name"]),
+    )
+    low_confidence_weight_pct = (
+        round(100.0 * sum(low_confidence_weight_g.values()) / analysed_weight_g, 1)
+        if analysed_weight_g > 0 else 0.0
+    )
+
     return AnalysisResult(
         period=PeriodResult(
             start=sorted_dates[0] if sorted_dates else "",
@@ -216,5 +248,7 @@ def analyze(
             unresolved_entries=unresolved_entries,
             skipped_foods=sorted(skipped_food_names),
             unresolved_foods=sorted(unresolved_food_names),
+            low_confidence_foods=low_confidence_foods,
+            low_confidence_weight_pct=low_confidence_weight_pct,
         ),
     )
