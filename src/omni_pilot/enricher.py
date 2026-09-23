@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date
 from typing import TypedDict
@@ -9,7 +10,14 @@ from typing import TypedDict
 import requests
 from tinydb import Query, TinyDB
 
+from omni_pilot import matcher
+from omni_pilot.matcher import Candidate
+
 logger = logging.getLogger(__name__)
+
+SEARCH_PAGE_SIZE = 25
+# USDA's search endpoint rejects "/" and intermittently rejects brackets (HTTP 400).
+_UNSAFE_QUERY_CHARS = re.compile(r"[()\[\]{}/\\]")
 
 
 class EnrichmentResult(TypedDict):
@@ -77,17 +85,27 @@ _USDA_NUMBER_TO_KEY = {v: k for k, v in USDA_NUTRIENT_MAP.items()}
 USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 
 
-def search_usda(query: str, api_key: str) -> dict | None:
-    """Search USDA FoodData Central for a food.
+def clean_query(query: str) -> str:
+    """Strip characters USDA's search endpoint rejects, collapsing whitespace."""
+    return " ".join(_UNSAFE_QUERY_CHARS.sub(" ", query).split())
 
-    Returns the best match food dict, or None if no results.
-    Prefers SR Legacy and Foundation datasets.
+
+def search_usda(query: str, api_key: str) -> list[dict]:
+    """Search USDA FoodData Central (SR Legacy and Foundation datasets).
+
+    Returns up to SEARCH_PAGE_SIZE foods in USDA's ranking order, or an empty
+    list when there are no results or the request fails.
     """
+    cleaned = clean_query(query)
+    if not cleaned:
+        logger.warning("Empty USDA query after cleaning: '%s'", query)
+        return []
+
     params = {
         "api_key": api_key,
-        "query": query,
+        "query": cleaned,
         "dataType": "SR Legacy,Foundation",
-        "pageSize": 5,
+        "pageSize": SEARCH_PAGE_SIZE,
     }
 
     try:
@@ -98,17 +116,55 @@ def search_usda(query: str, api_key: str) -> dict | None:
             resp = requests.get(USDA_SEARCH_URL, params=params, timeout=30)
         resp.raise_for_status()
     except requests.RequestException as e:
-        logger.error("USDA API request failed for '%s': %s", query, e)
-        return None
+        logger.error("USDA API request failed for '%s': %s", cleaned, e)
+        return []
 
-    data = resp.json()
-    foods = data.get("foods", [])
+    foods = resp.json().get("foods", [])
     if not foods:
-        logger.warning("No USDA results for query: '%s'", query)
-        return None
+        logger.warning("No USDA results for query: '%s'", cleaned)
+    return foods
 
-    # Return the first (best) match
-    return foods[0]
+
+def _nutrient_value(usda_food: dict, number: str) -> float | None:
+    for fn in usda_food.get("foodNutrients", []):
+        if str(fn.get("nutrientNumber", "")) == number and fn.get("value") is not None:
+            return float(fn["value"])
+    return None
+
+
+def get_food_candidates(query: str, api_key: str) -> list[Candidate]:
+    """Collect USDA candidates for a query, ranked, without duplicates.
+
+    Hits for the query itself come first, then hits for its head words alone
+    (e.g. "chickpea"), which surface forms the full query ranks out of view.
+    """
+    hits = search_usda(query, api_key)
+    if not hits:
+        return []
+    head, _ = matcher.head_words(query)
+    head_query = " ".join(head)
+    if head_query and head_query != clean_query(query).lower():
+        hits = hits + search_usda(head_query, api_key)
+
+    candidates: list[Candidate] = []
+    seen_ids: set = set()
+    for hit in hits:
+        fdc_id = hit.get("fdcId")
+        if fdc_id in seen_ids:
+            continue
+        seen_ids.add(fdc_id)
+        candidates.append(Candidate(
+            fdc_id=fdc_id,
+            description=hit.get("description", ""),
+            data_type=hit.get("dataType", ""),
+            rank=len(candidates),
+            protein_g=_nutrient_value(hit, "203"),
+            fat_g=_nutrient_value(hit, "204"),
+            carbs_g=_nutrient_value(hit, "205"),
+            fiber_g=_nutrient_value(hit, "291"),
+            raw=hit,
+        ))
+    return candidates
 
 
 def extract_micros_from_usda(usda_food: dict) -> dict[str, float | None]:
@@ -155,9 +211,10 @@ def get_food_micros(
             db.remove(Food.original_name == food_name)
 
     # Query USDA
-    usda_food = search_usda(usda_query, api_key)
-    if usda_food is None:
+    hits = search_usda(usda_query, api_key)
+    if not hits:
         return None
+    usda_food = hits[0]
 
     micros = extract_micros_from_usda(usda_food)
 
