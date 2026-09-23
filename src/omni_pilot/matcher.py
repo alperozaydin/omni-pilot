@@ -148,3 +148,70 @@ def matches_head(description: str, head: list[str], head_segments: int) -> bool:
         name += segments[1]
     prefix = {w for segment in segments[: head_segments + 1] for w in segment}
     return any(w in name for w in head) and all(w in prefix for w in head)
+
+
+def _word_overlap(query_words: set[str], description: str) -> float:
+    if not query_words:
+        return 0.0
+    description_words = {w for segment in _segments(description) for w in segment}
+    return len(query_words & description_words) / len(query_words)
+
+
+def macro_distance(logged: LoggedMacros, candidate: Candidate) -> float | None:
+    """How far a candidate's macros are from the logged ones, relative to kcal.
+
+    EU labels count carbs without fiber while USDA counts them with it, so the
+    closer of the two readings is used. None when the candidate lacks a macro.
+    """
+    protein, fat, carbs = candidate["protein_g"], candidate["fat_g"], candidate["carbs_g"]
+    if protein is None or fat is None or carbs is None:
+        return None
+    carbs_delta = abs(logged["carbs_g"] - carbs)
+    if candidate["fiber_g"] is not None:
+        carbs_delta = min(carbs_delta, abs(logged["carbs_g"] - (carbs - candidate["fiber_g"])))
+    weighted = (
+        4 * abs(logged["protein_g"] - protein)
+        + 9 * abs(logged["fat_g"] - fat)
+        + 4 * carbs_delta
+    )
+    return weighted / max(logged["kcal"], KCAL_FLOOR)
+
+
+def pick_best(
+    candidates: list[Candidate],
+    query: str,
+    logged: LoggedMacros | None,
+) -> Pick | None:
+    """Pick the candidate that is the named food and best fits the logged macros."""
+    if not candidates:
+        return None
+
+    head, head_segments = head_words(query)
+    pool = [c for c in candidates if matches_head(c["description"], head, head_segments)]
+    no_head_match = not pool
+    if no_head_match:
+        pool = list(candidates)
+    pool.sort(key=lambda c: c["rank"])
+
+    if logged is None:
+        return Pick(candidate=pool[0], macro_distance=None, confidence="no_macros")
+
+    query_words = {w for segment in _segments(query) for w in segment}
+    scored = []
+    for candidate in pool:
+        distance = macro_distance(logged, candidate)
+        if distance is None:
+            continue
+        score = distance + IDENTITY_WEIGHT * (1.0 - _word_overlap(query_words, candidate["description"]))
+        scored.append((candidate, distance, score))
+    if not scored:
+        return Pick(candidate=pool[0], macro_distance=None, confidence="weak")
+
+    best_score = min(score for _, _, score in scored)
+    tied = [s for s in scored if s[2] <= best_score + NEAR_TIE_BAND]
+    # SR Legacy carries far more micronutrients than Foundation, so it wins ties.
+    chosen, distance, _ = min(
+        tied, key=lambda s: (s[0]["data_type"] != "SR Legacy", s[2], s[0]["rank"])
+    )
+    confidence = "good" if distance <= GOOD_DISTANCE and not no_head_match else "weak"
+    return Pick(candidate=chosen, macro_distance=distance, confidence=confidence)
