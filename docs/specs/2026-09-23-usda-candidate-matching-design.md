@@ -1,6 +1,6 @@
 # Technical Specification: Macro-Validated USDA Candidate Matching (BAR-72)
 
-**Document Version:** 1.1 (identity-first scoring, query cleaning, stricter filter, all validated by simulation)
+**Document Version:** 1.2 (final-review fixes: weak no-head-match fallback without macros, search failure vs empty, incomplete-set caching, forward-compatible match_version reuse)
 **Date:** 2026-09-23
 **Status:** In Review
 **Linear Issue:** [BAR-72](https://linear.app/knaak/issue/BAR-72/usda-matching-takes-the-first-search-result-pick-candidates-by-logged)
@@ -182,7 +182,7 @@ distance = (4·ΔP + 9·ΔF + 4·ΔC) / max(logged.kcal, KCAL_FLOOR)
 
 1. Returns `None` if `candidates` is empty.
 2. `pool` is the candidates that pass the main-word filter, or all of them if none pass (fallback).
-3. **If `logged` is `None`:** return `pool[0]` by `rank`, with confidence `no_macros` and distance `None`.
+3. **If `logged` is `None`:** return `pool[0]` by `rank`, with distance `None`, and confidence `no_macros` — unless step 2's fallback applied (no candidate passed the head filter), in which case confidence is `weak`. Without a head match there is no reason to trust `pool[0]` at all, macros or not.
 4. Compute each candidate's distance (§3.4). Candidates whose distance is `None` are set aside. **If none can be scored:** return `pool[0]` by `rank` as `weak`, with distance `None`.
 5. Score each scored candidate:
 
@@ -211,14 +211,17 @@ A variant that excluded state words (`raw`, `cooked`, `hard`, …) from the over
 ### 4.1 Searching
 
 - `clean_query(query) -> str` replaces `( ) [ ] { } / \` with spaces and collapses whitespace. USDA returns HTTP 400 for `/` always and for parentheses intermittently (reproduced during design). Because USDA search is keyword-based, dropping these characters does not change which foods match: `nuts, coconut water liquid from coconuts` still returns *Nuts, coconut water (liquid from coconuts)* first.
-- `search_usda(query, api_key) -> list[dict]` sends the cleaned query and returns up to `SEARCH_PAGE_SIZE = 25` foods (SR Legacy + Foundation). It returns an empty list when there are no results or the request fails. If the query is empty after cleaning, it returns an empty list without making a request. The existing single 429 retry is kept.
-- `get_food_candidates(query, api_key) -> list[Candidate]` runs:
+- `search_usda(query, api_key) -> list[dict] | None` sends the cleaned query and returns up to `SEARCH_PAGE_SIZE = 25` foods (SR Legacy + Foundation). A request failure (a `requests.RequestException`, including an HTTP error after the existing 429 retry) is distinguished from a search that simply found nothing: failure returns `None`, no results returns `[]`. If the query is empty after cleaning, it returns `[]` without making a request — an empty query isn't a failed request. The existing single 429 retry is kept.
+- `get_food_candidates(query, api_key) -> tuple[list[Candidate], bool]` runs:
   - **search 1**, with the query;
   - **search 2**, with the head words joined by spaces (e.g. `chickpea`), skipped if it equals the cleaned, lowercased query. USDA search stems words, so the singular form returns the same hits as the plural (verified: `chickpea` and `chickpeas` both return the canned and dry chickpea entries that search 1 ranked out of view).
 
-  It concatenates search 1 hits before search 2 hits, removes duplicates by `fdcId` (keeping the first occurrence), assigns `rank` in that order, and extracts macros 203/204/205/291 from each hit's `foodNutrients`.
-  - If search 2 fails, search 1's candidates are used alone.
-  - If search 1 fails or returns nothing, the result is `[]` (the food is unresolved).
+  It concatenates search 1 hits before search 2 hits, removes duplicates by `fdcId` (keeping the first occurrence), assigns `rank` in that order, and extracts macros 203/204/205/291 from each hit's `foodNutrients`. Alongside the candidates it returns whether the set is **complete**:
+  - search 1 failing (`None`) or finding nothing (`[]`) → `([], True)` — no candidates, and that is the whole truth, not a partial one (the food is unresolved);
+  - search 2 **failing** (`None`) → search 1's candidates alone, marked **incomplete** (`False`) — there may be hits search 2 would have surfaced;
+  - search 2 finding nothing, or being skipped because it's redundant with search 1 → search 1's (plus search 2's, if any) candidates, marked **complete** (`True`).
+
+  A pick made from an incomplete set must not be treated as final (§4.3).
 
 ### 4.2 Cache entries
 
@@ -246,12 +249,16 @@ class FoodMatch(TypedDict):
 
 | Cached entry state | Behaviour |
 | --- | --- |
-| same query, `match_version == MATCH_VERSION` | return it from the cache |
+| same query, `match_version >= MATCH_VERSION` | return it from the cache (see `_is_current` below) |
 | same query, older or missing `match_version` | re-pick. **On success**, replace the entry. **On failure** (no candidates, network error), keep the old entry and return it with confidence `unverified`. It is retried on the next run and is never deleted before its replacement exists. |
 | different query | remove the entry and fetch (unchanged behaviour) |
 | none | fetch |
 
+Reuse is `match_version >= MATCH_VERSION`, not `==`: a private predicate `_is_current(entry) -> bool` (`entry.get("match_version", 0) >= MATCH_VERSION`) is shared by this lookup and by `count_outdated_matches`, so the two never disagree about what counts as current. This equal-or-newer rule is what makes cross-device matching forward compatible (§7): an entry stamped by newer code is accepted as-is by older code, instead of being endlessly re-picked back and forth.
+
 A fetch means `get_food_candidates` followed by `matcher.pick_best`, then `extract_micros_from_usda(pick.candidate.raw)` and an **upsert** of the cache entry keyed on `original_name`. It is an upsert, not an insert, because a re-picked legacy entry must be replaced in place: lookups read `cached[0]`, so a duplicate would shadow the new match. The function returns `None` only when a fresh fetch finds no candidates.
+
+**Incomplete candidate sets are cached without `match_version`.** When `get_food_candidates` reports the set as incomplete (§4.1 — the head-word search failed), the pick is still made, cached and returned normally, but the cache entry omits `match_version` entirely. `_is_current` then treats it exactly like a legacy entry: `count_outdated_matches` counts it, and the next run re-picks it once both searches can run. A warning is logged when caching an unstamped pick. This is what fixes the class of failure where a degraded pick (made after e.g. a USDA 503 on the head-word search) would otherwise be stamped current and never revisited.
 
 ### 4.4 `enrich_all_foods`
 
@@ -324,6 +331,7 @@ No new command or flag.
 
 - **First run on the Mac with the new code:** every cached food in the export has no `match_version`, so all are re-picked. That is about two USDA searches per food, roughly 250 calls for the current data, well under USDA's 1,000/hour limit. It takes a few minutes, and the notice from §6 explains the wait.
 - **Old code on the iPhone** (the iCloud copy of `src/`): it ignores the new fields and accepts any entry whose `usda_query` matches, so it simply reads the new picks. If it ever rewrites an entry (after a query change), that entry lacks `match_version` and the Mac re-picks it next run. Mixed versions therefore never corrupt data. The iPhone just doesn't re-pick until its code is updated.
+- **Forward compatibility:** because reuse checks `match_version >= MATCH_VERSION` rather than `==` (§4.3's `_is_current`), a device whose code is a version behind never re-picks an entry a newer device already stamped — it just accepts it, exactly like a current one. Only an entry whose `match_version` is strictly older than the running code's `MATCH_VERSION` (or missing) is re-picked. This is what keeps mixed-version rollout one-directional: newer code's picks stick, older code never fights them, and only a genuine `MATCH_VERSION` bump on a given device triggers that device's re-pick pass.
 - **What is rewritten:** only the default (USDA cache) table. The `translations` table and `food_mappings.yaml` are not modified by this change.
 
 ---
