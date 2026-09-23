@@ -1,6 +1,6 @@
 # Technical Specification: Macro-Validated USDA Candidate Matching (BAR-72)
 
-**Document Version:** 1.0
+**Document Version:** 1.1 (identity-first scoring, query cleaning, stricter filter, all validated by simulation)
 **Date:** 2026-09-23
 **Status:** In Review
 **Linear Issue:** [BAR-72](https://linear.app/knaak/issue/BAR-72/usda-matching-takes-the-first-search-result-pick-candidates-by-logged)
@@ -38,20 +38,35 @@ The failures fall into four classes:
    - Salat Caprese → *Fish, tuna salad*.
    - Misch Salat Rohkost → *Salad dressing, french*.
 
+A fifth, smaller defect: the USDA search endpoint returns HTTP 400 for queries containing `/`, and intermittently for queries containing parentheses. That is why `Bio Rinder-Hackfleisch fettgehalt geringer 20%` (query `beef, ground, 80% lean meat / 20% fat, raw`) never resolved. A refetch of `olives, ripe, canned (small-extra large)` fails the same way.
+
 ### The Solution
 
 MacroFactor already records kcal, protein, fat and carbs for every entry. That is ground truth for **what the user actually ate**, and it is currently unused for matching. This change uses it to choose among USDA candidates:
 
-1. Fetch many candidates instead of one.
-2. Keep only candidates that are the named food, using a deterministic main-word filter.
-3. Among those, pick the one whose macros are closest to the logged macros. On a near-tie, prefer candidates that match more query words, then SR Legacy.
+1. Clean the query of characters USDA rejects, then fetch many candidates instead of one.
+2. Keep only candidates that **are** the named food, using a deterministic main-word filter that looks at the start of the USDA description.
+3. Score each remaining candidate by macro distance **plus** a penalty for query words missing from its description, so the named food (feta, breast, red, chocolate) beats a different food with slightly closer macros. The macros still decide between forms of the named food (raw vs cooked, canned vs boiled). On a near-tie, SR Legacy wins.
 4. Record a confidence level per match. Matches that remain far off are **still counted** but are **flagged** in both reports.
 
 This fixes classes 1–3 automatically. Class 4 cannot be fixed by picking, because no single USDA food matches a mixed salad. It is surfaced by the flag and is left to a later change (see §9).
 
+### Validated by Simulation
+
+Before planning, the algorithm was prototyped and run, read-only, against every mapped food in the production DB: 123 foods, 61 kg, real USDA search results. The table shows the share of logged grams whose pick is within `GOOD_DISTANCE` of the logged macros:
+
+| Version | Good | Notes |
+| --- | --- | --- |
+| Today (first search result) | 54% | |
+| v1: closest macros, word overlap only as a tie-break | 79% | **Rejected.** It often swaps in a *different* food with similar macros and labels it `good`: Feta → *Camembert*, chocolate pudding → *Corn pudding*, red → *green* pepper, beef mince → *Lebanon bologna*, rice → *ON THE BORDER, Mexican rice*, mixed vegetables → *Babyfood*. A confidently wrong food is worse than today's defect. |
+| **This spec (v1.1)** | **70%** | Those identity errors are fixed. When the query itself is wrong (e.g. Pretzel was translated as `pretzels, hard, …` but the macros say soft), the pick stays on the named food and is flagged `weak`, not silently swapped. |
+
+The remaining ~30% `weak` is mostly mixed dishes (feta salad, Caprese, Königsgemüse, miso soup, a protein drink, Bulgur Pilav) and a few wrong translations. These are addressed by §9's follow-ups and by BAR-73.
+
 ### Decisions Made During Design
 
 - **The candidate filter is deterministic**, with no LLM in the matching step: it is testable, free, works offline, and runs identically on the iPhone.
+- **Food identity comes before macro fit.** A visible `weak` flag on the right food is preferred over a `good` label on the wrong one.
 - **Weak matches are counted and flagged**, never excluded or rescaled.
 - **Rollout is automatic.** The next normal `analyze` re-picks every cached entry. There is no preview command and no DB backup: only the rebuildable USDA cache is rewritten, and translations are untouched.
 
@@ -136,9 +151,15 @@ GENERIC_HEADS = {"snack", "beverage", "cereal", "cereal ready-to-eat", "alcoholi
                  "sauce", "salad dressing"}
 ```
 
-**The rule:** a candidate passes if **every** head word appears in the candidate's first `h + 1` segments, where `h` is the number of head segments (1 or 2). For example:
-- `carbonated beverage, cola` passes *Beverages, carbonated, cola, regular*.
+**The rule:** a candidate passes if both of these hold:
+1. **at least one** head word appears in the candidate's *name*. The name is its first segment, or its first two segments when the first is itself in `GENERIC_HEADS` (USDA's `Beverages, tea, …` and `Snacks, pretzels, …` style);
+2. **every** head word appears in the candidate's first `h + 1` segments, where `h` is the number of head segments (1 or 2).
+
+Rule 1 rejects hits that only mention the food in passing. Without it, the v1 simulation picked *Lebanon bologna, beef* for `beef, …`, *ON THE BORDER, Mexican rice* for `rice, …`, and *Babyfood, vegetables, …* for `vegetables, …`. Examples:
 - `chickpeas, …` rejects *Lentils, …*.
+- `beef, ground, …` rejects *Lebanon bologna, beef*.
+- `tea, iced, …` passes *Beverages, tea, instant, …* and rejects *Sweeteners, for baking, contains sugar …*.
+- `carbonated beverage, cola` passes *Beverages, carbonated, cola, regular*.
 
 **Fallback:** if no candidate passes, all candidates are considered, and the resulting pick's confidence is forced to `weak`.
 
@@ -162,17 +183,26 @@ distance = (4·ΔP + 9·ΔF + 4·ΔC) / max(logged.kcal, KCAL_FLOOR)
 1. Returns `None` if `candidates` is empty.
 2. `pool` is the candidates that pass the main-word filter, or all of them if none pass (fallback).
 3. **If `logged` is `None`:** return `pool[0]` by `rank`, with confidence `no_macros` and distance `None`.
-4. Score each candidate in `pool`. Candidates whose distance is `None` are set aside. **If none can be scored:** return `pool[0]` by `rank` as `weak`, with distance `None`.
-5. `best` is the minimum distance. The **band** is the scored candidates with distance ≤ `best + NEAR_TIE_BAND` (0.05).
-6. Order the band by:
-   1. query-word overlap, descending. This is the fraction of the query's normalised words (all segments) that occur anywhere in the candidate description, and it keeps Gemini's intent, e.g. `breast`;
-   2. `data_type == "SR Legacy"` first (complete nutrient panels);
+4. Compute each candidate's distance (§3.4). Candidates whose distance is `None` are set aside. **If none can be scored:** return `pool[0]` by `rank` as `weak`, with distance `None`.
+5. Score each scored candidate:
+
+   ```
+   overlap = |query words ∩ candidate words| / |query words|   # normalised words, all segments
+   score   = distance + IDENTITY_WEIGHT × (1 − overlap)          # IDENTITY_WEIGHT = 0.5
+   ```
+
+   The overlap term keeps the food the query names. For example, `cheese, feta` gives *Cheese, camembert* a 0.25 penalty, which outweighs its closer macros. Differences in form (raw vs cooked) cost at most one word's share of the penalty, so a large macro mismatch still switches form (raw rice → cooked rice).
+6. `best` is the minimum score. The **band** is the candidates with score ≤ `best + NEAR_TIE_BAND` (0.05). Order the band by:
+   1. `data_type == "SR Legacy"` first (complete nutrient panels);
+   2. score ascending;
    3. `rank` ascending.
 
    The first one is chosen.
-7. Confidence is `good` if its distance ≤ `GOOD_DISTANCE` (0.25), otherwise `weak`. It is always `weak` if the fallback in step 2 applied.
+7. Confidence is `good` if its **distance** (not score) ≤ `GOOD_DISTANCE` (0.25), otherwise `weak`. It is always `weak` if the fallback in step 2 applied.
 
-All thresholds (`KCAL_FLOOR`, `NEAR_TIE_BAND`, `GOOD_DISTANCE`, `GENERIC_HEADS`) are module-level constants.
+All thresholds (`KCAL_FLOOR`, `NEAR_TIE_BAND`, `GOOD_DISTANCE`, `IDENTITY_WEIGHT`, `GENERIC_HEADS`) are module-level constants. `IDENTITY_WEIGHT = 0.5` was chosen by simulation: at 0.3, Feta still lost to Camembert and whole-wheat bread to chapati.
+
+A variant that excluded state words (`raw`, `cooked`, `hard`, …) from the overlap was also simulated and rejected. It fixed nothing it was meant to fix (Pretzel and Kichererbsen stayed the same) and regressed other foods (Milch → buttermilk, burger patties → pre-cooked patties).
 
 ---
 
@@ -180,10 +210,11 @@ All thresholds (`KCAL_FLOOR`, `NEAR_TIE_BAND`, `GOOD_DISTANCE`, `GENERIC_HEADS`)
 
 ### 4.1 Searching
 
-- `search_usda(query, api_key) -> list[dict]` returns up to `SEARCH_PAGE_SIZE = 25` foods (SR Legacy + Foundation). It returns an empty list when there are no results or the request fails. The existing single 429 retry is kept.
+- `clean_query(query) -> str` replaces `( ) [ ] { } / \` with spaces and collapses whitespace. USDA returns HTTP 400 for `/` always and for parentheses intermittently (reproduced during design). Because USDA search is keyword-based, dropping these characters does not change which foods match: `nuts, coconut water liquid from coconuts` still returns *Nuts, coconut water (liquid from coconuts)* first.
+- `search_usda(query, api_key) -> list[dict]` sends the cleaned query and returns up to `SEARCH_PAGE_SIZE = 25` foods (SR Legacy + Foundation). It returns an empty list when there are no results or the request fails. If the query is empty after cleaning, it returns an empty list without making a request. The existing single 429 retry is kept.
 - `get_food_candidates(query, api_key) -> list[Candidate]` runs:
   - **search 1**, with the query;
-  - **search 2**, with the head words joined by spaces (e.g. `chickpea`), skipped if it equals the query. USDA search stems words, so the singular form returns the same hits as the plural (verified: `chickpea` and `chickpeas` both return the canned and dry chickpea entries that search 1 ranked out of view).
+  - **search 2**, with the head words joined by spaces (e.g. `chickpea`), skipped if it equals the cleaned, lowercased query. USDA search stems words, so the singular form returns the same hits as the plural (verified: `chickpea` and `chickpeas` both return the canned and dry chickpea entries that search 1 ranked out of view).
 
   It concatenates search 1 hits before search 2 hits, removes duplicates by `fdcId` (keeping the first occurrence), assigns `rank` in that order, and extracts macros 203/204/205/291 from each hit's `foodNutrients`.
   - If search 2 fails, search 1's candidates are used alone.
@@ -220,7 +251,7 @@ class FoodMatch(TypedDict):
 | different query | remove the entry and fetch (unchanged behaviour) |
 | none | fetch |
 
-A fetch means `get_food_candidates` followed by `matcher.pick_best`, then `extract_micros_from_usda(pick.candidate.raw)` and inserting the cache entry. The function returns `None` only when a fresh fetch finds no candidates.
+A fetch means `get_food_candidates` followed by `matcher.pick_best`, then `extract_micros_from_usda(pick.candidate.raw)` and an **upsert** of the cache entry keyed on `original_name`. It is an upsert, not an insert, because a re-picked legacy entry must be replaced in place: lookups read `cached[0]`, so a duplicate would shadow the new match. The function returns `None` only when a fresh fetch finds no candidates.
 
 ### 4.4 `enrich_all_foods`
 
@@ -264,6 +295,7 @@ Terminal (yellow):
 
 - `off N%` is `macro_distance × 100`, rounded to a whole number.
 - A `None` distance is shown without the `(off …)` part.
+- The line is printed as a Rich `Text` object, not a markup string. Food and USDA names can contain `[...]` (e.g. `Paprika [red]`), which markup would swallow as a style tag.
 
 HTML: the same content as a `<p>` in the existing warnings block, whose condition is extended to include it.
 
@@ -300,49 +332,80 @@ No new command or flag.
 
 All USDA HTTP calls are mocked, and no test touches Gemini. Candidate fixtures are small hand-built dicts copied from real USDA search responses observed during the audit.
 
-**`tests/test_matcher.py`** (new):
+**`tests/test_matcher.py`** (new). Each `pick_best` case below is a real food from the audit, with its real USDA values:
 - `logged_macros_per_100g`: weighted aggregation across several entries; zero-weight entries are ignored; a zero-total food is absent.
-- Normalisation and head words:
+- Head words:
   - parentheses are removed;
-  - `tomatoes`/`berries`/`chickpeas`/`glass` singularise correctly;
-  - a generic head (`fish, salmon, …`, `carbonated beverage, cola`) uses two segments.
+  - `tomatoes`/`berries`/`chickpeas` singularise, and `glass` does not;
+  - a generic head (`fish, salmon, …`, `carbonated beverage, cola`) uses two segments;
+  - an empty query has no head.
 - Filter:
   - `chickpeas, …` rejects *Lentils*;
-  - `carbonated beverage, cola` accepts *Beverages, carbonated, cola, regular*.
+  - `beef, ground, …` rejects *Lebanon bologna, beef*;
+  - `rice, …` rejects *ON THE BORDER, Mexican rice*;
+  - `tea, iced, …` accepts *Beverages, tea, …* and rejects *Sweeteners, …*;
+  - `carbonated beverage, cola` accepts *Beverages, carbonated, cola, regular*;
+  - Foundation's empty segment is ignored.
 - `macro_distance`:
+  - the calorie-weighted formula;
   - the fiber-adjusted carbs reading is chosen when it is closer;
-  - `KCAL_FLOOR` is applied for low-energy foods;
+  - `KCAL_FLOOR` is applied for low-energy foods, and a 0 kcal food doesn't divide by zero;
   - `None` when the candidate lacks a macro.
 - `pick_best`:
-  - chickpeas beat lentils for the Kichererbsen macros;
-  - cooked rice beats raw rice for a logged 141 kcal / P3 F1 C29;
-  - the chicken breast entry beats generic chicken, by distance and query-word overlap;
+  - Feta beats Camembert despite Camembert's closer macros;
+  - cooked rice beats raw rice for Reis XXL (distance ≈ 0.102, `good`);
+  - lentils are never chosen for chickpeas;
+  - red pepper beats green for Paprika salat (and is `weak`);
+  - the breast entry beats generic and light-meat chicken;
   - SR Legacy beats Foundation within the near-tie band;
-  - the empty-filter fallback is `weak`;
-  - no logged macros gives `no_macros` and `rank` 0;
+  - the empty-filter fallback is `weak`, even with close macros;
+  - no logged macros gives `no_macros` and the first matching candidate;
   - no scorable candidates gives `weak` with distance `None`;
   - an empty candidate list gives `None`.
 
 **`tests/test_enricher.py`** (extended):
+- `clean_query`: strips parentheses and `/`, and leaves a plain query unchanged.
+- `search_usda`:
+  - sends the cleaned query with `SEARCH_PAGE_SIZE`;
+  - a request failure gives `[]`;
+  - a query that is empty after cleaning makes no request.
 - `get_food_candidates`:
   - search 1 hits come before search 2 hits;
   - duplicates are removed by `fdcId`;
+  - a single-word query is searched once;
   - a failed search 2 still yields search 1's candidates;
   - a failed search 1 yields `[]`.
 - `get_food_match`:
-  - a current-version cache hit makes no HTTP call;
-  - a legacy entry is re-picked and rewritten with `match_version`;
-  - a failed re-pick keeps the legacy entry and returns `unverified`;
-  - a query change removes and refetches.
-- `enrich_all_foods`: a `weak` match appears in both `profiles` and `low_confidence`, and `good` does not appear in `low_confidence`.
-- `count_outdated_matches`: counts only same-query, old-version entries.
-- Existing tests are updated for the new signatures, and `tests/helpers.enrichment` gains a `low_confidence` keyword.
+  - a current-version cache hit makes no search;
+  - a fresh pick is cached with `match_version`, `macro_distance` and `usda_macros`;
+  - a legacy entry is re-picked and replaced in place (exactly one entry remains);
+  - a failed re-pick keeps the legacy entry unstamped and returns `unverified`;
+  - a query change removes the entry and refetches;
+  - no results gives `None`.
+- `enrich_all_foods`:
+  - a `weak` match (feta for a feta salad) appears in both `profiles` and `low_confidence`;
+  - a `good` match does not appear in `low_confidence`;
+  - logged macros are passed through;
+  - the existing skip/unresolved tests are kept.
+- `count_outdated_matches`: counts only same-query, old-version entries; skipped, remapped, current and uncached foods are not counted.
+- `tests/helpers.enrichment` gains a `low_confidence` keyword, and a new `food_entry` builder produces complete parsed entries.
 
-**`tests/test_analyzer.py`:** `low_confidence_foods` is sorted by grams, and `low_confidence_weight_pct` uses analysed weight as the denominator.
+**`tests/test_analyzer.py`:**
+- `low_confidence_foods` is sorted by grams, summed across days;
+- weak foods still count toward nutrients;
+- `low_confidence_weight_pct` uses analysed weight as the denominator, excluding skipped and unresolved foods;
+- empty inputs give `[]` and `0.0`.
 
-**Reporter tests:** the warning line appears in the terminal and HTML output only when non-empty, and the formatting handles a `None` distance.
+**`tests/test_reporter.py`:**
+- the warning line appears in the terminal and HTML output only when non-empty;
+- `(off …)` is omitted for a `None` distance;
+- a name containing `[red]` prints literally;
+- the HTML warnings block renders when low-confidence foods are its only content.
 
-**`tests/test_cli.py`:** logged macros are passed through to `enrich_all_foods`.
+**`tests/test_cli.py`:**
+- logged macros are passed through to `enrich_all_foods`;
+- the re-match notice appears only when outdated entries exist;
+- existing tests use `food_entry`.
 
 ---
 
@@ -353,10 +416,11 @@ These are planned as separate design cycles that build on `matcher.pick_best`:
 - **Pinning the USDA food ID in mappings.** Store the chosen `fdcId` in the translation/YAML so a match is explicit, editable, and immune to ranking drift.
 - **Splitting mixed dishes into ingredients.** Gemini proposes ingredients with proportions, each one is matched separately, and the weighted sum is validated against the logged macros.
 
+- **Giving Gemini the logged macros when translating** ([BAR-73](https://linear.app/knaak/issue/BAR-73/give-gemini-the-logged-macros-when-translating-foods-so-queries-name)), so queries name the right form in the first place (soft vs hard pretzel, low-fat vs whole milk).
+
 Also not addressed here:
-- Gemini prompt changes;
 - cleanup of the 20 stale cache entries keyed on untranslated names;
-- the two mapped foods with no profile (`Apfel`, and `Bio Rinder-Hackfleisch…`, whose query contains `/`).
+- `Apfel`, which is mapped but has no profile. (`Bio Rinder-Hackfleisch…`, the other such food, is fixed by query cleaning.)
 
 ---
 
