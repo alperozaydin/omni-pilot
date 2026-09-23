@@ -11,13 +11,21 @@ import requests
 from tinydb import Query, TinyDB
 
 from omni_pilot import matcher
-from omni_pilot.matcher import Candidate
+from omni_pilot.matcher import Candidate, LoggedMacros
 
 logger = logging.getLogger(__name__)
 
+# Bump whenever the candidate-picking logic changes in a way that should
+# re-pick cached foods: entries stamped with an older version are re-matched.
+MATCH_VERSION = 1
 SEARCH_PAGE_SIZE = 25
 # USDA's search endpoint rejects "/" and intermittently rejects brackets (HTTP 400).
 _UNSAFE_QUERY_CHARS = re.compile(r"[()\[\]{}/\\]")
+
+
+class LowConfidenceMatch(TypedDict):
+    usda_name: str
+    macro_distance: float | None
 
 
 class EnrichmentResult(TypedDict):
@@ -30,6 +38,16 @@ class EnrichmentResult(TypedDict):
     profiles: dict[str, dict[str, float | None]]
     skipped: set[str]
     unresolved: set[str]
+    # Resolved foods whose USDA match fits the logged macros poorly. They stay
+    # in profiles and are counted; the report names them.
+    low_confidence: dict[str, LowConfidenceMatch]
+
+
+class FoodMatch(TypedDict):
+    per_100g: dict[str, float | None]
+    usda_name: str
+    confidence: str  # "good" | "weak" | "no_macros" | "unverified"
+    macro_distance: float | None
 
 
 # Maps our internal nutrient keys to USDA nutrient numbers.
@@ -189,65 +207,115 @@ def extract_micros_from_usda(usda_food: dict) -> dict[str, float | None]:
     return result
 
 
-def get_food_micros(
+def _match_from_entry(entry: dict, confidence: str | None = None) -> FoodMatch:
+    return FoodMatch(
+        per_100g=entry["per_100g"],
+        usda_name=entry.get("usda_name", ""),
+        confidence=confidence or entry.get("confidence", ""),
+        macro_distance=entry.get("macro_distance"),
+    )
+
+
+def get_food_match(
     food_name: str,
     usda_query: str,
+    logged: LoggedMacros | None,
     db: TinyDB,
     api_key: str,
-) -> dict[str, float | None] | None:
-    """Get per-100g micro profile for a food.
+) -> FoodMatch | None:
+    """Get the USDA match and per-100g micro profile for a food.
 
-    Checks TinyDB cache first, then queries USDA API.
-    Returns None if the food cannot be resolved.
+    A cache entry is reused only when both its query and its match_version are
+    current. An entry picked by older matching logic is re-picked, but kept
+    (as "unverified") if the re-pick fails, so a network hiccup never turns a
+    known food into an unresolved one. Returns None if the food cannot be
+    resolved at all.
     """
     Food = Query()
+    stale_entry = None
     cached = db.search(Food.original_name == food_name)
     if cached:
-        if cached[0].get("usda_query") == usda_query:
-            return cached[0]["per_100g"]
+        entry = cached[0]
+        if entry.get("usda_query") == usda_query:
+            if entry.get("match_version", 0) == MATCH_VERSION:
+                return _match_from_entry(entry)
+            stale_entry = entry
         else:
-            # Mapping changed, invalidate cache
+            # Mapping changed: the old entry describes a different query
             logger.info("Mapping changed for '%s', refetching...", food_name)
             db.remove(Food.original_name == food_name)
 
-    # Query USDA
-    hits = search_usda(usda_query, api_key)
-    if not hits:
+    pick = matcher.pick_best(get_food_candidates(usda_query, api_key), usda_query, logged)
+    if pick is None:
+        if stale_entry is not None:
+            logger.warning("Re-matching '%s' failed; keeping its previous USDA match", food_name)
+            return _match_from_entry(stale_entry, confidence="unverified")
         return None
-    usda_food = hits[0]
 
-    micros = extract_micros_from_usda(usda_food)
-
-    # Determine confidence
-    confidence = "direct" if usda_query == food_name else "mapped"
-
-    # Cache in TinyDB
-    db.insert({
+    candidate = pick["candidate"]
+    micros = extract_micros_from_usda(candidate["raw"])
+    db.upsert({
         "original_name": food_name,
         "usda_query": usda_query,
-        "usda_name": usda_food.get("description", ""),
-        "usda_fdc_id": usda_food.get("fdcId"),
-        "usda_dataset": usda_food.get("dataType", ""),
+        "usda_name": candidate["description"],
+        "usda_fdc_id": candidate["fdc_id"],
+        "usda_dataset": candidate["data_type"],
         "per_100g": micros,
-        "confidence": confidence,
+        "confidence": pick["confidence"],
+        "match_version": MATCH_VERSION,
+        "macro_distance": pick["macro_distance"],
+        "usda_macros": {
+            "protein_g": candidate["protein_g"],
+            "fat_g": candidate["fat_g"],
+            "carbs_g": candidate["carbs_g"],
+            "fiber_g": candidate["fiber_g"],
+        },
         "last_updated": str(date.today()),
-    })
+    }, Food.original_name == food_name)
 
-    return micros
+    return FoodMatch(
+        per_100g=micros,
+        usda_name=candidate["description"],
+        confidence=pick["confidence"],
+        macro_distance=pick["macro_distance"],
+    )
+
+
+def count_outdated_matches(food_names: list[str], mappings: dict[str, str], db: TinyDB) -> int:
+    """Count cached foods whose query is current but whose match_version is not."""
+    Food = Query()
+    outdated = 0
+    for food_name in food_names:
+        mapping = mappings.get(food_name, "")
+        if mapping == "skip":
+            continue
+        query = mapping if mapping else food_name
+        cached = db.search(Food.original_name == food_name)
+        if (
+            cached
+            and cached[0].get("usda_query") == query
+            and cached[0].get("match_version", 0) != MATCH_VERSION
+        ):
+            outdated += 1
+    return outdated
 
 
 def enrich_all_foods(
     food_names: list[str],
     mappings: dict[str, str],
+    logged_macros: dict[str, LoggedMacros],
     db: TinyDB,
     api_key: str,
 ) -> EnrichmentResult:
     """Enrich all foods with USDA micro data.
 
     Resolved foods go into profiles, foods mapped to "skip" into skipped, and
-    foods whose USDA lookup failed into unresolved.
+    foods whose USDA lookup failed into unresolved. Resolved foods whose match
+    is weak are also listed in low_confidence.
     """
-    result: EnrichmentResult = {"profiles": {}, "skipped": set(), "unresolved": set()}
+    result: EnrichmentResult = {
+        "profiles": {}, "skipped": set(), "unresolved": set(), "low_confidence": {},
+    }
 
     for food_name in food_names:
         mapping = mappings.get(food_name, "")
@@ -259,9 +327,9 @@ def enrich_all_foods(
 
         # Use the mapping if provided, otherwise use the original name
         query = mapping if mapping else food_name
-        micros = get_food_micros(food_name, query, db, api_key)
+        match = get_food_match(food_name, query, logged_macros.get(food_name), db, api_key)
 
-        if micros is None:
+        if match is None:
             result["unresolved"].add(food_name)
             logger.warning(
                 "Could not resolve '%s' (query: '%s') — marking as unresolved",
@@ -269,6 +337,11 @@ def enrich_all_foods(
             )
             continue
 
-        result["profiles"][food_name] = micros
+        result["profiles"][food_name] = match["per_100g"]
+        if match["confidence"] == "weak":
+            result["low_confidence"][food_name] = LowConfidenceMatch(
+                usda_name=match["usda_name"],
+                macro_distance=match["macro_distance"],
+            )
 
     return result

@@ -8,7 +8,8 @@ import yaml
 from tinydb import TinyDB
 
 from omni_pilot.cli import main
-from tests.helpers import enrichment
+from omni_pilot.enricher import MATCH_VERSION
+from tests.helpers import enrichment, food_entry
 
 
 class TestCLIHelp:
@@ -100,7 +101,7 @@ class TestCLIAnalyze:
 
         mocker.patch(
             "omni_pilot.cli.parse_food_log",
-            return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
+            return_value=[food_entry("Apfel")],
         )
         mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Apfel": {}}))
         mocker.patch("omni_pilot.cli.analyze", return_value={})
@@ -136,10 +137,7 @@ class TestCLIAnalyze:
 
         mocker.patch(
             "omni_pilot.cli.parse_food_log",
-            return_value=[
-                {"food_name": name, "total_weight_g": 100.0, "date": "2026-08-01"}
-                for name in ("Apfel", "Wasser", "Lachs")
-            ],
+            return_value=[food_entry(name) for name in ("Apfel", "Wasser", "Lachs")],
         )
         mocker.patch(
             "omni_pilot.cli.resolve_and_sync_mappings",
@@ -184,7 +182,7 @@ class TestCLIAnalyze:
 
         mocker.patch(
             "omni_pilot.cli.parse_food_log",
-            return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
+            return_value=[food_entry("Apfel")],
         )
         mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Apfel": {}}))
         mocker.patch("omni_pilot.cli.analyze", return_value={})
@@ -223,7 +221,7 @@ class TestCLIAnalyze:
 
         mocker.patch(
             "omni_pilot.cli.parse_food_log",
-            return_value=[{"food_name": "Apfel", "total_weight_g": 100.0, "date": "2026-08-01"}],
+            return_value=[food_entry("Apfel")],
         )
         mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Apfel": {}}))
         mocker.patch("omni_pilot.cli.analyze", return_value={})
@@ -251,3 +249,61 @@ class TestCLIAnalyze:
         mappings_mtime_after = os.path.getmtime(mappings_path)
         assert db_mtime_after == db_mtime_before
         assert mappings_mtime_after == mappings_mtime_before
+
+    def _write_config(self, tmp_path, mappings: dict) -> tuple[str, str, str]:
+        db_path = str(tmp_path / "db.json")
+        mappings_path = str(tmp_path / "mappings.yaml")
+        settings_path = str(tmp_path / "settings.yaml")
+        ref_ranges_path = str(tmp_path / "ref_ranges.yaml")
+        with open(mappings_path, "w") as f:
+            yaml.dump({"mappings": mappings}, f)
+        with open(settings_path, "w") as f:
+            yaml.dump({"usda_api_key": "fake_key", "database_path": db_path, "mappings_path": mappings_path}, f)
+        with open(ref_ranges_path, "w") as f:
+            yaml.dump({"nutrients": {}}, f)
+        return db_path, settings_path, ref_ranges_path
+
+    def _run(self, mocker, settings_path: str, ref_ranges_path: str) -> None:
+        mocker.patch("omni_pilot.cli.analyze", return_value={})
+        mocker.patch("omni_pilot.cli.print_terminal_report")
+        mocker.patch("sys.argv", [
+            "omni_pilot", "analyze", "data/MacroFactor-example.xlsx",
+            "--settings", settings_path, "--ref-ranges", ref_ranges_path,
+        ])
+        main()
+
+    def test_analyze_passes_logged_macros_to_enrichment(self, mocker, tmp_path):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[
+            food_entry("Reis", 200.0, calories_kcal=260.0, protein_g=6.0, fat_g=0.0, carbs_g=56.0),
+        ])
+        mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        logged = mock_enrich.call_args.args[2]
+        assert logged["Reis"] == {"kcal": 130.0, "protein_g": 3.0, "fat_g": 0.0, "carbs_g": 28.0}
+
+    def test_analyze_announces_rematching_of_outdated_cache(self, mocker, tmp_path, capsys):
+        db_path, settings_path, ref_ranges_path = self._write_config(
+            tmp_path, {"Reis": "rice, cooked", "Milch": "milk"}
+        )
+        db = TinyDB(db_path)
+        db.insert({"original_name": "Reis", "usda_query": "rice, cooked", "per_100g": {}})
+        db.insert({"original_name": "Milch", "usda_query": "milk", "per_100g": {}, "match_version": MATCH_VERSION})
+        db.close()
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Reis"), food_entry("Milch")])
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert "Re-matching 1 cached foods with updated USDA matching..." in capsys.readouterr().out
+
+    def test_analyze_is_silent_when_cache_is_current(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Reis")])
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert "Re-matching" not in capsys.readouterr().out
