@@ -70,6 +70,21 @@ def _coverage_line(coverage: dict) -> str:
     return f"{mapped}/{total} entries analyzed ({skipped} skipped, {unresolved} unresolved)"
 
 
+def _low_confidence_line(coverage: dict) -> str | None:
+    """Name the foods whose USDA match fits the logged macros poorly, if any."""
+    foods = coverage["low_confidence_foods"]
+    if not foods:
+        return None
+    described = []
+    for food in foods:
+        text = f"{food['name']} → {food['usda_name']}"
+        if food["macro_distance"] is not None:
+            text += f" (off {food['macro_distance'] * 100:.0f}%)"
+        described.append(text)
+    share = coverage["low_confidence_weight_pct"]
+    return f"Low-confidence matches ({share:.0f}% of analysed weight): {', '.join(described)}"
+
+
 def print_terminal_report(result: dict, settings: dict) -> None:
     """Print a Rich-formatted micronutrient report to the terminal."""
     console = Console()
@@ -165,6 +180,10 @@ def print_terminal_report(result: dict, settings: dict) -> None:
     if coverage["unresolved_foods"]:
         foods_str = ", ".join(coverage["unresolved_foods"])
         console.print(f"  ⚠ Unresolved foods: {foods_str}", style="red")
+    low_confidence_line = _low_confidence_line(coverage)
+    if low_confidence_line:
+        # Text, not a markup string: food and USDA names can contain "[...]".
+        console.print(Text(f"  ⚠ {low_confidence_line}", style="yellow"))
 
 
 HTML_TEMPLATE = """\
@@ -250,10 +269,11 @@ HTML_TEMPLATE = """\
     {% if has_floor %}
     <p class="footnote">* computed from partial USDA data — the true value can only be higher</p>
     {% endif %}
-    {% if skipped_foods or unresolved_foods %}
+    {% if skipped_foods or unresolved_foods or low_confidence_line %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
         {% if unresolved_foods %}<p>⚠ Unresolved: {{ unresolved_foods|join(", ") }}</p>{% endif %}
+        {% if low_confidence_line %}<p>⚠ {{ low_confidence_line }}</p>{% endif %}
     </div>
     {% endif %}
 </body>
@@ -291,6 +311,7 @@ def generate_html_report(result: dict, output_path: str) -> None:
         has_floor=any(n["is_floor"] for n in nutrients.values()),
         skipped_foods=coverage["skipped_foods"],
         unresolved_foods=coverage["unresolved_foods"],
+        low_confidence_line=_low_confidence_line(coverage),
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
