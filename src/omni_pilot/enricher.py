@@ -108,11 +108,13 @@ def clean_query(query: str) -> str:
     return " ".join(_UNSAFE_QUERY_CHARS.sub(" ", query).split())
 
 
-def search_usda(query: str, api_key: str) -> list[dict]:
+def search_usda(query: str, api_key: str) -> list[dict] | None:
     """Search USDA FoodData Central (SR Legacy and Foundation datasets).
 
-    Returns up to SEARCH_PAGE_SIZE foods in USDA's ranking order, or an empty
-    list when there are no results or the request fails.
+    Returns up to SEARCH_PAGE_SIZE foods in USDA's ranking order, an empty
+    list when there are no results (including an empty query after
+    cleaning), or None when the request itself fails. None is kept distinct
+    from [] so a caller can tell "nothing more to find" from "couldn't ask".
     """
     cleaned = clean_query(query)
     if not cleaned:
@@ -135,7 +137,7 @@ def search_usda(query: str, api_key: str) -> list[dict]:
         resp.raise_for_status()
     except requests.RequestException as e:
         logger.error("USDA API request failed for '%s': %s", cleaned, e)
-        return []
+        return None
 
     foods = resp.json().get("foods", [])
     if not foods:
@@ -150,19 +152,30 @@ def _nutrient_value(usda_food: dict, number: str) -> float | None:
     return None
 
 
-def get_food_candidates(query: str, api_key: str) -> list[Candidate]:
+def get_food_candidates(query: str, api_key: str) -> tuple[list[Candidate], bool]:
     """Collect USDA candidates for a query, ranked, without duplicates.
 
     Hits for the query itself come first, then hits for its head words alone
     (e.g. "chickpea"), which surface forms the full query ranks out of view.
+
+    Also returns whether the set is complete. It is incomplete only when the
+    head-word search fails outright (as opposed to running and finding
+    nothing) — a pick made from an incomplete set should not be trusted as
+    final. Search 1 failing or finding nothing yields no candidates at all,
+    which is unaffected by completeness.
     """
     hits = search_usda(query, api_key)
     if not hits:
-        return []
+        return [], True
     head, _ = matcher.head_words(query)
     head_query = " ".join(head)
+    complete = True
     if head_query and head_query != clean_query(query).lower():
-        hits = hits + search_usda(head_query, api_key)
+        head_hits = search_usda(head_query, api_key)
+        if head_hits is None:
+            complete = False
+        else:
+            hits = hits + head_hits
 
     candidates: list[Candidate] = []
     seen_ids: set = set()
@@ -182,7 +195,7 @@ def get_food_candidates(query: str, api_key: str) -> list[Candidate]:
             fiber_g=_nutrient_value(hit, "291"),
             raw=hit,
         ))
-    return candidates
+    return candidates, complete
 
 
 def extract_micros_from_usda(usda_food: dict) -> dict[str, float | None]:
@@ -207,6 +220,16 @@ def extract_micros_from_usda(usda_food: dict) -> dict[str, float | None]:
     return result
 
 
+def _is_current(entry: dict) -> bool:
+    """Whether a cache entry's match_version is at least the current one.
+
+    ">=", not "==": a device running older code must not re-pick an entry a
+    newer device already stamped (and vice versa after the next version
+    bump), or the two would keep rewriting each other's matches forever.
+    """
+    return entry.get("match_version", 0) >= MATCH_VERSION
+
+
 def _match_from_entry(entry: dict, confidence: str | None = None) -> FoodMatch:
     return FoodMatch(
         per_100g=entry["per_100g"],
@@ -225,11 +248,15 @@ def get_food_match(
 ) -> FoodMatch | None:
     """Get the USDA match and per-100g micro profile for a food.
 
-    A cache entry is reused only when both its query and its match_version are
-    current. An entry picked by older matching logic is re-picked, but kept
-    (as "unverified") if the re-pick fails, so a network hiccup never turns a
-    known food into an unresolved one. Returns None if the food cannot be
-    resolved at all.
+    A cache entry is reused only when both its query is current and its
+    match_version is at least the current one (see `_is_current`). An entry
+    picked by older matching logic is re-picked, but kept (as "unverified")
+    if the re-pick fails, so a network hiccup never turns a known food into
+    an unresolved one. Returns None if the food cannot be resolved at all.
+
+    A pick made from an incomplete candidate set (the head-word search
+    failed) is cached but left without `match_version`, so it is treated as
+    outdated and retried on the next run instead of being trusted as final.
     """
     Food = Query()
     stale_entry = None
@@ -237,7 +264,7 @@ def get_food_match(
     if cached:
         entry = cached[0]
         if entry.get("usda_query") == usda_query:
-            if entry.get("match_version", 0) == MATCH_VERSION:
+            if _is_current(entry):
                 return _match_from_entry(entry)
             stale_entry = entry
         else:
@@ -245,7 +272,8 @@ def get_food_match(
             logger.info("Mapping changed for '%s', refetching...", food_name)
             db.remove(Food.original_name == food_name)
 
-    pick = matcher.pick_best(get_food_candidates(usda_query, api_key), usda_query, logged)
+    candidates, complete = get_food_candidates(usda_query, api_key)
+    pick = matcher.pick_best(candidates, usda_query, logged)
     if pick is None:
         if stale_entry is not None:
             logger.warning("Re-matching '%s' failed; keeping its previous USDA match", food_name)
@@ -254,7 +282,7 @@ def get_food_match(
 
     candidate = pick["candidate"]
     micros = extract_micros_from_usda(candidate["raw"])
-    db.upsert({
+    entry_to_cache = {
         "original_name": food_name,
         "usda_query": usda_query,
         "usda_name": candidate["description"],
@@ -262,7 +290,6 @@ def get_food_match(
         "usda_dataset": candidate["data_type"],
         "per_100g": micros,
         "confidence": pick["confidence"],
-        "match_version": MATCH_VERSION,
         "macro_distance": pick["macro_distance"],
         "usda_macros": {
             "protein_g": candidate["protein_g"],
@@ -271,7 +298,14 @@ def get_food_match(
             "fiber_g": candidate["fiber_g"],
         },
         "last_updated": str(date.today()),
-    }, Food.original_name == food_name)
+    }
+    if complete:
+        entry_to_cache["match_version"] = MATCH_VERSION
+    else:
+        logger.warning(
+            "Caching an unstamped pick for '%s': the candidate set was incomplete", food_name
+        )
+    db.upsert(entry_to_cache, Food.original_name == food_name)
 
     return FoodMatch(
         per_100g=micros,
@@ -291,11 +325,7 @@ def count_outdated_matches(food_names: list[str], mappings: dict[str, str], db: 
             continue
         query = mapping if mapping else food_name
         cached = db.search(Food.original_name == food_name)
-        if (
-            cached
-            and cached[0].get("usda_query") == query
-            and cached[0].get("match_version", 0) != MATCH_VERSION
-        ):
+        if cached and cached[0].get("usda_query") == query and not _is_current(cached[0]):
             outdated += 1
     return outdated
 

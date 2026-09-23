@@ -553,3 +553,17 @@ class TestLowConfidenceCoverage:
         result = analyze(entries, enrichment(skipped={"Water"}), self.REF_RANGES)
         assert result["coverage"]["low_confidence_foods"] == []
         assert result["coverage"]["low_confidence_weight_pct"] == 0.0
+
+    def test_weak_food_with_only_zero_weight_entries_is_not_listed(self):
+        # A weak food logged with 0 g (e.g. a "Quick Add" style zero entry)
+        # must not surface as a 0 g row in the low-confidence list.
+        entries = [{"date": "2026-08-09", "food_name": "Caprese", "total_weight_g": 0.0}]
+        low_confidence = {"Caprese": {"usda_name": "Fish, tuna salad", "macro_distance": 1.5}}
+
+        result = analyze(
+            entries,
+            enrichment({"Caprese": {"vitamin_a_mcg": 10.0}}, low_confidence=low_confidence),
+            self.REF_RANGES,
+        )
+
+        assert result["coverage"]["low_confidence_foods"] == []

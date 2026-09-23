@@ -239,6 +239,15 @@ class TestPickBest:
         assert pick["confidence"] == "no_macros"
         assert pick["macro_distance"] is None
 
+    def test_without_logged_macros_and_no_head_match_is_weak_not_no_macros(self):
+        # No candidate is the named food at all, and there are no macros to
+        # fall back on either — this is weaker than an ordinary no_macros pick.
+        candidates = [_candidate("Fish, tuna salad", 16.0, 9.3, 9.4, rank=0)]
+        pick = pick_best(candidates, "caprese salad", None)
+        assert pick["candidate"]["description"] == "Fish, tuna salad"
+        assert pick["confidence"] == "weak"
+        assert pick["macro_distance"] is None
+
     def test_no_scorable_candidate_is_weak_without_distance(self):
         candidates = [_candidate("Ketchup, restaurant", None, None, None, rank=0)]
         pick = pick_best(candidates, "ketchup", _logged(100.0, 0.0, 0.0, 21.0))

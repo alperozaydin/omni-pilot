@@ -139,7 +139,7 @@ def analyze(
         total_weight_g = entry["total_weight_g"]
         scale_factor = total_weight_g / 100.0
         analysed_weight_g += total_weight_g
-        if food_name in enrichment["low_confidence"]:
+        if total_weight_g > 0 and food_name in enrichment["low_confidence"]:
             low_confidence_weight_g[food_name] += total_weight_g
 
         for nutrient_key in nutrient_keys:

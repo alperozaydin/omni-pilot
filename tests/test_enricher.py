@@ -66,11 +66,13 @@ class TestSearchUsda:
         assert params["pageSize"] == SEARCH_PAGE_SIZE
         assert foods == [{"fdcId": 1}]
 
-    def test_request_failure_returns_empty_list(self, mocker):
+    def test_request_failure_returns_none(self, mocker):
+        # None is distinguishable from "no results" ([]): a failed search-2
+        # must not be treated as "the food has no more candidates".
         mocker.patch(
             "omni_pilot.enricher.requests.get", side_effect=requests.ConnectionError("offline")
         )
-        assert search_usda("honey", "fake-key") == []
+        assert search_usda("honey", "fake-key") is None
 
     def test_query_empty_after_cleaning_makes_no_request(self, mocker):
         mock_get = mocker.patch("omni_pilot.enricher.requests.get")
@@ -96,26 +98,38 @@ class TestGetFoodCandidates:
         }
         mocker.patch("omni_pilot.enricher.search_usda", side_effect=lambda q, key: by_query[q])
 
-        candidates = get_food_candidates("chickpeas, cooked, boiled", "fake-key")
+        candidates, complete = get_food_candidates("chickpeas, cooked, boiled", "fake-key")
 
         assert [c["fdc_id"] for c in candidates] == [1, 2, 3]
         assert [c["rank"] for c in candidates] == [0, 1, 2]
         assert candidates[0]["protein_g"] == 10.0
         assert candidates[0]["fiber_g"] is None
+        assert complete is True
 
     def test_single_word_query_is_searched_once(self, mocker):
         mock_search = mocker.patch("omni_pilot.enricher.search_usda", return_value=[_usda_hit(1, "Honey")])
         get_food_candidates("Honey", "fake-key")
         mock_search.assert_called_once_with("Honey", "fake-key")
 
-    def test_failed_head_word_search_keeps_query_hits(self, mocker):
+    def test_head_word_search_with_no_results_keeps_query_hits_and_is_complete(self, mocker):
+        # search 2 ran and simply found nothing more — that is not a failure.
         by_query = {"chickpeas, canned": [_usda_hit(3, "Chickpeas, canned")], "chickpea": []}
         mocker.patch("omni_pilot.enricher.search_usda", side_effect=lambda q, key: by_query[q])
-        assert [c["fdc_id"] for c in get_food_candidates("chickpeas, canned", "fake-key")] == [3]
+        candidates, complete = get_food_candidates("chickpeas, canned", "fake-key")
+        assert [c["fdc_id"] for c in candidates] == [3]
+        assert complete is True
+
+    def test_failed_head_word_search_keeps_query_hits_but_marks_incomplete(self, mocker):
+        # search 2 failed outright (None) — the set is missing data, not empty.
+        by_query = {"chickpeas, canned": [_usda_hit(3, "Chickpeas, canned")], "chickpea": None}
+        mocker.patch("omni_pilot.enricher.search_usda", side_effect=lambda q, key: by_query[q])
+        candidates, complete = get_food_candidates("chickpeas, canned", "fake-key")
+        assert [c["fdc_id"] for c in candidates] == [3]
+        assert complete is False
 
     def test_failed_query_search_returns_nothing(self, mocker):
-        mock_search = mocker.patch("omni_pilot.enricher.search_usda", return_value=[])
-        assert get_food_candidates("chickpeas, canned", "fake-key") == []
+        mock_search = mocker.patch("omni_pilot.enricher.search_usda", return_value=None)
+        assert get_food_candidates("chickpeas, canned", "fake-key") == ([], True)
         mock_search.assert_called_once()
 
 
@@ -195,12 +209,26 @@ class TestGetFoodMatch:
         assert match["confidence"] == "good"
         mock_candidates.assert_not_called()
 
+    def test_entry_stamped_newer_than_current_is_used_without_searching(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert({
+            **self._legacy_entry(), "usda_name": "Egg, whole, cooked, hard-boiled",
+            "per_100g": {"vitamin_a_mcg": 149.0}, "confidence": "good",
+            "match_version": MATCH_VERSION + 1, "macro_distance": 0.01,
+        })
+        mock_candidates = mocker.patch("omni_pilot.enricher.get_food_candidates")
+
+        match = get_food_match("Boiled Eggs", "egg, whole, cooked, hard-boiled", EGG_LOGGED, db, "fake-key")
+
+        assert match["per_100g"] == {"vitamin_a_mcg": 149.0}
+        mock_candidates.assert_not_called()
+
     def test_picks_by_macros_and_caches_the_match(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
-        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=[
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([
             _candidate(1, "Egg, whole, raw, frozen", 12.3, 9.5, 0.8, rank=0),
             _candidate(2, "Egg, whole, cooked, hard-boiled", 12.6, 10.6, 1.1, rank=1),
-        ])
+        ], True))
 
         match = get_food_match("Boiled Eggs", "egg, whole, cooked, hard-boiled", EGG_LOGGED, db, "fake-key")
 
@@ -216,9 +244,9 @@ class TestGetFoodMatch:
     def test_legacy_entry_is_repicked_and_replaced(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
         db.insert(self._legacy_entry())
-        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=[
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([
             _candidate(2, "Egg, whole, cooked, hard-boiled", 12.6, 10.6, 1.1),
-        ])
+        ], True))
 
         match = get_food_match("Boiled Eggs", "egg, whole, cooked, hard-boiled", EGG_LOGGED, db, "fake-key")
 
@@ -231,7 +259,7 @@ class TestGetFoodMatch:
     def test_failed_repick_keeps_legacy_entry_as_unverified(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
         db.insert(self._legacy_entry())
-        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=[])
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([], True))
 
         match = get_food_match("Boiled Eggs", "egg, whole, cooked, hard-boiled", EGG_LOGGED, db, "fake-key")
 
@@ -244,7 +272,7 @@ class TestGetFoodMatch:
     def test_changed_query_refetches(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
         db.insert(self._legacy_entry())
-        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=[])
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([], True))
 
         match = get_food_match("Boiled Eggs", "egg, whole, raw", EGG_LOGGED, db, "fake-key")
 
@@ -254,8 +282,40 @@ class TestGetFoodMatch:
 
     def test_returns_none_when_usda_has_no_results(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
-        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=[])
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([], True))
         assert get_food_match("Unknown Food", "unknown food", None, db, "fake-key") is None
+
+    def test_incomplete_candidate_set_caches_the_pick_without_match_version(self, mocker, tmp_path):
+        # search 2 failed (e.g. a USDA 503): the pick was made from a partial
+        # set, so it must not be stamped current, or it would never be retried.
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([
+            _candidate(1, "Lentils, sprouted, raw", 9.0, 0.5, 19.5),
+        ], False))
+
+        match = get_food_match("Linsen", "lentils, sprouted, raw", None, db, "fake-key")
+
+        assert match["usda_name"] == "Lentils, sprouted, raw"
+        [entry] = db.all()
+        assert "match_version" not in entry
+        assert count_outdated_matches(["Linsen"], {"Linsen": "lentils, sprouted, raw"}, db) == 1
+
+    def test_a_later_complete_pick_stamps_a_previously_incomplete_entry(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([
+            _candidate(1, "Lentils, sprouted, raw", 9.0, 0.5, 19.5),
+        ], False))
+        get_food_match("Linsen", "lentils, sprouted, raw", None, db, "fake-key")
+
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([
+            _candidate(2, "Lentils, cooked, boiled, without salt", 9.0, 0.4, 20.1),
+        ], True))
+        match = get_food_match("Linsen", "lentils, sprouted, raw", None, db, "fake-key")
+
+        assert match["usda_name"] == "Lentils, cooked, boiled, without salt"
+        [entry] = db.all()
+        assert entry["match_version"] == MATCH_VERSION
+        assert count_outdated_matches(["Linsen"], {"Linsen": "lentils, sprouted, raw"}, db) == 0
 
 
 class TestCountOutdatedMatches:
@@ -269,6 +329,17 @@ class TestCountOutdatedMatches:
         count = count_outdated_matches(["Legacy", "Current", "Remapped", "Water", "New"], mappings, db)
 
         assert count == 1
+
+    def test_an_entry_stamped_newer_than_current_is_not_outdated(self, tmp_path):
+        # A device running newer matching code may stamp match_version ahead
+        # of this build's MATCH_VERSION; a lagging device must not re-pick it.
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert({
+            "original_name": "Newer", "usda_query": "egg", "per_100g": {},
+            "match_version": MATCH_VERSION + 1,
+        })
+        count = count_outdated_matches(["Newer"], {"Newer": "egg"}, db)
+        assert count == 0
 
 
 class TestEnrichAllFoods:
@@ -326,9 +397,9 @@ class TestEnrichAllFoods:
 
     def test_weak_match_is_counted_and_listed_as_low_confidence(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
-        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=[
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([
             _candidate(1, "Cheese, feta", 14.2, 21.5, 3.9),
-        ])
+        ], True))
         # A feta salad: far fewer calories than feta itself.
         logged = {"Salzlakenkaese salat": {"kcal": 54.0, "protein_g": 4.0, "fat_g": 3.0, "carbs_g": 2.0}}
 
@@ -343,9 +414,9 @@ class TestEnrichAllFoods:
 
     def test_good_match_is_not_low_confidence(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
-        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=[
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([
             _candidate(2, "Egg, whole, cooked, hard-boiled", 12.6, 10.6, 1.1),
-        ])
+        ], True))
 
         result = enrich_all_foods(
             ["Boiled Eggs"], {"Boiled Eggs": "egg, whole, cooked, hard-boiled"}, {"Boiled Eggs": EGG_LOGGED},

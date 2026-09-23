@@ -194,7 +194,10 @@ def pick_best(
     pool.sort(key=lambda c: c["rank"])
 
     if logged is None:
-        return Pick(candidate=pool[0], macro_distance=None, confidence="no_macros")
+        # No macros to fall back on, and no candidate is even the named food:
+        # weaker than an ordinary no_macros pick, which at least has a head match.
+        confidence = "weak" if no_head_match else "no_macros"
+        return Pick(candidate=pool[0], macro_distance=None, confidence=confidence)
 
     query_words = {w for segment in _segments(query) for w in segment}
     scored = []
