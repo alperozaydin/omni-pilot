@@ -31,6 +31,24 @@ class LowConfidenceFood(TypedDict):
     grams: float
 
 
+class CustomIngredient(TypedDict):
+    fdc_id: int
+    usda_name: str
+    share_pct: float
+
+
+class CustomFoodUse(TypedDict):
+    name: str
+    grams: float
+    macro_distance: float | None
+
+
+class CustomRecipeUse(TypedDict):
+    recipe: str
+    ingredients: list[CustomIngredient]  # in recipe order
+    foods: list[CustomFoodUse]  # by grams, descending
+
+
 class CoverageResult(TypedDict):
     total_food_entries: int
     mapped_entries: int
@@ -40,6 +58,7 @@ class CoverageResult(TypedDict):
     unresolved_foods: list[str]
     low_confidence_foods: list[LowConfidenceFood]
     low_confidence_weight_pct: float
+    custom_recipes: list[CustomRecipeUse]
 
 
 class PeriodResult(TypedDict):
@@ -62,6 +81,49 @@ COMBINED_NUTRIENTS = {
     "phenylalanine_tyrosine_g": ["phenylalanine_g", "tyrosine_g"],
     "omega3_epa_dha_mg": ["omega3_epa_mg", "omega3_dha_mg"],
 }
+
+
+def _food_parts(
+    food_name: str, enrichment: EnrichmentResult,
+) -> list[tuple[float, dict[str, float | None]]] | None:
+    """A food's nutrient sources with their weight shares, or None if it isn't analysed.
+
+    A USDA-matched food is one part; a custom food is one part per recipe
+    ingredient.
+    """
+    profile = enrichment["profiles"].get(food_name)
+    if profile is not None:
+        return [(1.0, profile)]
+    custom = enrichment["custom"].get(food_name)
+    if custom is not None:
+        return [(part["share"], part["per_100g"]) for part in custom["parts"]]
+    return None
+
+
+def _custom_recipe_uses(
+    custom: dict, weights_g: dict[str, float],
+) -> list[CustomRecipeUse]:
+    """Group the custom foods eaten in the period by recipe, heaviest first."""
+    by_recipe: dict[str, CustomRecipeUse] = {}
+    for food_name, grams in weights_g.items():
+        match = custom[food_name]
+        use = by_recipe.get(match["recipe"])
+        if use is None:
+            use = by_recipe[match["recipe"]] = CustomRecipeUse(
+                recipe=match["recipe"],
+                ingredients=[
+                    CustomIngredient(fdc_id=part["fdc_id"], usda_name=part["usda_name"], share_pct=part["share"] * 100)
+                    for part in match["parts"]
+                ],
+                foods=[],
+            )
+        use["foods"].append(CustomFoodUse(name=food_name, grams=grams, macro_distance=match["macro_distance"]))
+    for use in by_recipe.values():
+        use["foods"].sort(key=lambda food: (-food["grams"], food["name"]))
+    return sorted(
+        by_recipe.values(),
+        key=lambda use: (-sum(food["grams"] for food in use["foods"]), use["recipe"]),
+    )
 
 
 def determine_status(value: float, target: float, ul: float | None) -> str:
@@ -94,7 +156,9 @@ def analyze(
     Coverage is tracked per reference nutrient key: a food with no USDA value
     for a nutrient — or, for a combined nutrient, missing any one component —
     contributes nothing to it, and its weight is booked as unmeasured rather
-    than silently as 0.0.
+    than silently as 0.0. A custom food is counted part by part, each part
+    weighing its share of the entry, so an ingredient missing a nutrient
+    books only its own share as unmeasured.
     """
     total_entries = len(entries)
     mapped_entries = 0
@@ -114,15 +178,14 @@ def analyze(
     # Consumed grams of all analysed entries, and of weakly matched foods
     analysed_weight_g = 0.0
     low_confidence_weight_g: dict[str, float] = defaultdict(float)
+    custom_weight_g: dict[str, float] = defaultdict(float)
     dates: set[str] = set()
-
-    profiles = enrichment["profiles"]
 
     for entry in entries:
         food_name = entry["food_name"]
-        food_micros = profiles.get(food_name)
+        parts = _food_parts(food_name, enrichment)
 
-        if food_micros is None:
+        if parts is None:
             # Skipped and unresolved foods are both excluded from coverage on
             # both sides; they differ only in how the report labels them.
             if food_name in enrichment["skipped"]:
@@ -137,26 +200,29 @@ def analyze(
         entry_date = entry["date"]
         dates.add(entry_date)
         total_weight_g = entry["total_weight_g"]
-        scale_factor = total_weight_g / 100.0
         analysed_weight_g += total_weight_g
         if total_weight_g > 0 and food_name in enrichment["low_confidence"]:
             low_confidence_weight_g[food_name] += total_weight_g
+        if total_weight_g > 0 and food_name in enrichment["custom"]:
+            custom_weight_g[food_name] += total_weight_g
 
-        for nutrient_key in nutrient_keys:
-            component_keys = COMBINED_NUTRIENTS.get(nutrient_key, [nutrient_key])
-            component_values = [food_micros.get(ck) for ck in component_keys]
+        for share, food_micros in parts:
+            part_weight_g = total_weight_g * share
+            for nutrient_key in nutrient_keys:
+                component_keys = COMBINED_NUTRIENTS.get(nutrient_key, [nutrient_key])
+                component_values = [food_micros.get(ck) for ck in component_keys]
 
-            if any(value is None for value in component_values):
-                unmeasured_weight_g[nutrient_key] += total_weight_g
-                continue
+                if any(value is None for value in component_values):
+                    unmeasured_weight_g[nutrient_key] += part_weight_g
+                    continue
 
-            measured_weight_g[nutrient_key] += total_weight_g
-            # USDA provides EPA and DHA in grams, but our reference target is in mg
-            contribution = sum(
-                value * 1000.0 if ck in ("omega3_epa_mg", "omega3_dha_mg") else value
-                for ck, value in zip(component_keys, component_values)
-            )
-            daily_totals[entry_date][nutrient_key] += contribution * scale_factor
+                measured_weight_g[nutrient_key] += part_weight_g
+                # USDA provides EPA and DHA in grams, but our reference target is in mg
+                contribution = sum(
+                    value * 1000.0 if ck in ("omega3_epa_mg", "omega3_dha_mg") else value
+                    for ck, value in zip(component_keys, component_values)
+                )
+                daily_totals[entry_date][nutrient_key] += contribution * (part_weight_g / 100.0)
 
     # Compute daily averages
     num_days = len(dates) if dates else 1
@@ -250,5 +316,6 @@ def analyze(
             unresolved_foods=sorted(unresolved_food_names),
             low_confidence_foods=low_confidence_foods,
             low_confidence_weight_pct=low_confidence_weight_pct,
+            custom_recipes=_custom_recipe_uses(enrichment["custom"], custom_weight_g),
         ),
     )
