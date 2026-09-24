@@ -11,6 +11,7 @@ import requests
 from tinydb import Query, TinyDB
 
 from omni_pilot import matcher
+from omni_pilot.custom_foods import CustomFoods, Recipe, no_custom_foods, recipe_macros
 from omni_pilot.matcher import Candidate, LoggedMacros, UsdaMacros
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,19 @@ class LowConfidenceMatch(TypedDict):
     macro_distance: float | None
 
 
+class RecipePart(TypedDict):
+    share: float
+    fdc_id: int
+    usda_name: str
+    per_100g: dict[str, float | None]
+
+
+class CustomFoodMatch(TypedDict):
+    recipe: str
+    parts: list[RecipePart]
+    macro_distance: float | None
+
+
 class EnrichmentResult(TypedDict):
     """Outcome of enriching a set of foods.
 
@@ -41,6 +55,10 @@ class EnrichmentResult(TypedDict):
     # Resolved foods whose USDA match fits the logged macros poorly. They stay
     # in profiles and are counted; the report names them.
     low_confidence: dict[str, LowConfidenceMatch]
+    # Foods covered by a custom recipe, built from its ingredients. They are
+    # never in profiles: the analyzer counts them ingredient by ingredient, so
+    # an ingredient missing a nutrient costs only its own share of coverage.
+    custom: dict[str, CustomFoodMatch]
 
 
 class FoodMatch(TypedDict):
@@ -419,24 +437,80 @@ def count_outdated_matches(food_names: list[str], mappings: dict[str, str], db: 
     return outdated
 
 
+def _recipe_ingredients(
+    recipe: Recipe, db: TinyDB, api_key: str, fetched: dict[int, UsdaFood | None],
+) -> list[tuple[float, UsdaFood]] | None:
+    """Each ingredient's share and USDA food, or None if any is unavailable.
+
+    `fetched` memoises lookups for the run, so an ID that failed isn't
+    requested again for the next food sharing the recipe.
+    """
+    ingredients = []
+    for ingredient in recipe["ingredients"]:
+        fdc_id = ingredient["fdc_id"]
+        if fdc_id not in fetched:
+            fetched[fdc_id] = get_usda_food(fdc_id, db, api_key)
+        food = fetched[fdc_id]
+        if food is None:
+            logger.error("Recipe '%s': USDA food %s is unavailable", recipe["name"], fdc_id)
+            return None
+        ingredients.append((ingredient["share"], food))
+    return ingredients
+
+
+def _custom_food_match(
+    recipe_name: str, ingredients: list[tuple[float, UsdaFood]], logged: LoggedMacros | None,
+) -> CustomFoodMatch:
+    macros = recipe_macros([(share, food["usda_macros"]) for share, food in ingredients])
+    return CustomFoodMatch(
+        recipe=recipe_name,
+        parts=[
+            RecipePart(share=share, fdc_id=food["fdc_id"], usda_name=food["usda_name"], per_100g=food["per_100g"])
+            for share, food in ingredients
+        ],
+        macro_distance=matcher.macro_distance(logged, macros) if logged is not None else None,
+    )
+
+
 def enrich_all_foods(
     food_names: list[str],
     mappings: dict[str, str],
     logged_macros: dict[str, LoggedMacros],
     db: TinyDB,
     api_key: str,
+    custom_foods: CustomFoods | None = None,
 ) -> EnrichmentResult:
     """Enrich all foods with USDA micro data.
 
-    Resolved foods go into profiles, foods mapped to "skip" into skipped, and
+    A food covered by a custom recipe is built from the recipe's ingredients
+    and goes into custom, whatever its mapping says (even "skip"). Otherwise:
+    resolved foods go into profiles, foods mapped to "skip" into skipped, and
     foods whose USDA lookup failed into unresolved. Resolved foods whose match
     is weak are also listed in low_confidence.
     """
+    if custom_foods is None:
+        custom_foods = no_custom_foods()
     result: EnrichmentResult = {
-        "profiles": {}, "skipped": set(), "unresolved": set(), "low_confidence": {},
+        "profiles": {}, "skipped": set(), "unresolved": set(), "low_confidence": {}, "custom": {},
     }
+    fetched: dict[int, UsdaFood | None] = {}
 
     for food_name in food_names:
+        recipe_name = custom_foods["by_food"].get(food_name)
+        if recipe_name is not None:
+            ingredients = _recipe_ingredients(custom_foods["recipes"][recipe_name], db, api_key, fetched)
+            if ingredients is None:
+                result["unresolved"].add(food_name)
+                logger.warning(
+                    "Could not resolve '%s': an ingredient of recipe '%s' is unavailable",
+                    food_name, recipe_name,
+                )
+            else:
+                result["custom"][food_name] = _custom_food_match(
+                    recipe_name, ingredients, logged_macros.get(food_name),
+                )
+            continue
+
         mapping = mappings.get(food_name, "")
 
         if mapping == "skip":

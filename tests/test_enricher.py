@@ -18,6 +18,7 @@ from omni_pilot.enricher import (
     get_usda_food,
     search_usda,
 )
+from omni_pilot.matcher import GOOD_DISTANCE
 
 
 def _usda_hit(
@@ -529,3 +530,122 @@ class TestEnrichAllFoods:
         )
 
         assert result["low_confidence"] == {}
+
+
+TOMATO_HIT = _usda_hit(1, "Tomatoes, red, ripe, raw", 0.88, 0.2, 3.89, vitamin_a=42.0)
+MOZZARELLA_HIT = _usda_hit(2, "Cheese, mozzarella, whole milk", 22.2, 22.1, 2.4, vitamin_a=179.0)
+CAPRESE_FOODS = {
+    "recipes": {
+        "caprese": {
+            "name": "caprese",
+            "foods": ["Salat Caprese", "Caprese to go"],
+            "ingredients": [{"fdc_id": 1, "share": 0.75}, {"fdc_id": 2, "share": 0.25}],
+        },
+    },
+    "by_food": {"Salat Caprese": "caprese", "Caprese to go": "caprese"},
+}
+CAPRESE_LOGGED = {"kcal": 74.0, "protein_g": 4.9, "fat_g": 4.2, "carbs_g": 3.0}
+
+
+class TestEnrichCustomFoods:
+    def _fetch(self, mocker, foods: dict[int, dict]):
+        return mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food", side_effect=lambda fdc_id, api_key: foods.get(fdc_id),
+        )
+
+    def test_custom_food_is_built_from_its_recipe_without_searching(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        self._fetch(mocker, {1: TOMATO_HIT, 2: MOZZARELLA_HIT})
+        mock_search = mocker.patch("omni_pilot.enricher.search_usda")
+
+        result = enrich_all_foods(["Salat Caprese"], {}, {}, db, "fake-key", custom_foods=CAPRESE_FOODS)
+
+        assert result["profiles"] == {}
+        match = result["custom"]["Salat Caprese"]
+        assert match["recipe"] == "caprese"
+        assert [(p["share"], p["fdc_id"], p["usda_name"]) for p in match["parts"]] == [
+            (0.75, 1, "Tomatoes, red, ripe, raw"),
+            (0.25, 2, "Cheese, mozzarella, whole milk"),
+        ]
+        assert match["parts"][1]["per_100g"]["vitamin_a_mcg"] == 179.0
+        mock_search.assert_not_called()
+
+    def test_recipe_overrides_skip_and_usda_mappings(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        self._fetch(mocker, {1: TOMATO_HIT, 2: MOZZARELLA_HIT})
+        mock_match = mocker.patch("omni_pilot.enricher.get_food_match")
+        mappings = {"Salat Caprese": "skip", "Caprese to go": "caprese salad"}
+
+        result = enrich_all_foods(
+            ["Caprese to go", "Salat Caprese"], mappings, {}, db, "fake-key", custom_foods=CAPRESE_FOODS,
+        )
+
+        assert set(result["custom"]) == {"Salat Caprese", "Caprese to go"}
+        assert result["skipped"] == set()
+        mock_match.assert_not_called()
+
+    def test_unavailable_ingredient_makes_every_food_of_the_recipe_unresolved(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mock_fetch = self._fetch(mocker, {1: TOMATO_HIT})  # FDC ID 2 cannot be fetched
+
+        result = enrich_all_foods(
+            ["Caprese to go", "Salat Caprese"], {}, {}, db, "fake-key", custom_foods=CAPRESE_FOODS,
+        )
+
+        assert result["unresolved"] == {"Salat Caprese", "Caprese to go"}
+        assert result["custom"] == {}
+        # The failing ID is asked for once per run, not once per food
+        assert sorted(call.args[0] for call in mock_fetch.call_args_list) == [1, 2]
+
+    def test_shared_ingredients_are_fetched_once(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mock_fetch = self._fetch(mocker, {1: TOMATO_HIT, 2: MOZZARELLA_HIT})
+        custom = {
+            "recipes": {
+                **CAPRESE_FOODS["recipes"],
+                "tomato_salad": {
+                    "name": "tomato_salad", "foods": ["Tomatensalat"], "ingredients": [{"fdc_id": 1, "share": 1.0}],
+                },
+            },
+            "by_food": {**CAPRESE_FOODS["by_food"], "Tomatensalat": "tomato_salad"},
+        }
+
+        enrich_all_foods(
+            ["Caprese to go", "Salat Caprese", "Tomatensalat"], {}, {}, db, "fake-key", custom_foods=custom,
+        )
+
+        assert mock_fetch.call_count == 2
+
+    def test_macro_check_is_per_food(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        self._fetch(mocker, {1: TOMATO_HIT, 2: MOZZARELLA_HIT})
+
+        result = enrich_all_foods(
+            ["Caprese to go", "Salat Caprese"], {}, {"Salat Caprese": CAPRESE_LOGGED}, db, "fake-key",
+            custom_foods=CAPRESE_FOODS,
+        )
+
+        # Recipe per 100 g: P 6.21, F 5.675, C 3.5175 (the fixtures have no fiber)
+        expected = (4 * 1.31 + 9 * 1.475 + 4 * 0.5175) / 74.0
+        assert result["custom"]["Salat Caprese"]["macro_distance"] == pytest.approx(expected)
+        # No logged macros: not checked
+        assert result["custom"]["Caprese to go"]["macro_distance"] is None
+
+    def test_badly_matching_recipe_is_counted_but_not_low_confidence(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        self._fetch(mocker, {1: TOMATO_HIT, 2: MOZZARELLA_HIT})
+        logged = {"Salat Caprese": {"kcal": 300.0, "protein_g": 30.0, "fat_g": 20.0, "carbs_g": 1.0}}
+
+        result = enrich_all_foods(["Salat Caprese"], {}, logged, db, "fake-key", custom_foods=CAPRESE_FOODS)
+
+        assert result["custom"]["Salat Caprese"]["macro_distance"] > GOOD_DISTANCE
+        assert result["low_confidence"] == {}
+
+    def test_without_custom_foods_nothing_is_custom(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.search_usda", return_value=[])
+
+        result = enrich_all_foods(["Salat Caprese"], {}, {}, db, "fake-key")
+
+        assert result["custom"] == {}
+        assert result["unresolved"] == {"Salat Caprese"}

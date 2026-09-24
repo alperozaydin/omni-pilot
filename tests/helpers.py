@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from omni_pilot.enricher import EnrichmentResult, LowConfidenceMatch
+from omni_pilot.enricher import CustomFoodMatch, EnrichmentResult, LowConfidenceMatch
 
 
 def enrichment(
@@ -12,6 +12,7 @@ def enrichment(
     skipped: Iterable[str] = (),
     unresolved: Iterable[str] = (),
     low_confidence: dict[str, LowConfidenceMatch] | None = None,
+    custom: dict[str, CustomFoodMatch] | None = None,
 ) -> EnrichmentResult:
     """Build an EnrichmentResult, defaulting the parts a test doesn't care about."""
     return {
@@ -19,6 +20,7 @@ def enrichment(
         "skipped": set(skipped),
         "unresolved": set(unresolved),
         "low_confidence": dict(low_confidence or {}),
+        "custom": dict(custom or {}),
     }
 
 
