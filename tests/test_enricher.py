@@ -12,8 +12,10 @@ from omni_pilot.enricher import (
     count_outdated_matches,
     enrich_all_foods,
     extract_micros_from_usda,
+    fetch_usda_food,
     get_food_candidates,
     get_food_match,
+    get_usda_food,
     search_usda,
 )
 
@@ -51,6 +53,109 @@ def _candidate(fdc_id: int, description: str, protein: float, fat: float, carbs:
 
 
 EGG_LOGGED = {"kcal": 155.0, "protein_g": 12.6, "fat_g": 10.6, "carbs_g": 1.1}
+
+
+# An abridged /food/{id} response, as USDA returns it (trimmed).
+ABRIDGED_TOMATO = {
+    "fdcId": 170457,
+    "description": "Tomatoes, red, ripe, raw, year round average",
+    "dataType": "SR Legacy",
+    "publicationDate": "2019-04-01",
+    "foodNutrients": [
+        {"number": "203", "name": "Protein", "amount": 0.88, "unitName": "G"},
+        {"number": "204", "name": "Total lipid (fat)", "amount": 0.2, "unitName": "G"},
+        {"number": "205", "name": "Carbohydrate, by difference", "amount": 3.89, "unitName": "G"},
+        {"number": "291", "name": "Fiber, total dietary", "amount": 1.2, "unitName": "G"},
+        {"number": "430", "name": "Vitamin K (phylloquinone)", "amount": 7.9, "unitName": "UG"},
+        # Listed without an amount: not measured
+        {"number": "418", "name": "Vitamin B-12", "unitName": "UG"},
+    ],
+}
+
+
+class TestFetchUsdaFood:
+    def test_requests_the_abridged_food_and_returns_it_in_search_shape(self, mocker):
+        mock_get = mocker.patch("omni_pilot.enricher.requests.get")
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = ABRIDGED_TOMATO
+
+        food = fetch_usda_food(170457, "fake-key")
+
+        assert mock_get.call_args.args[0] == "https://api.nal.usda.gov/fdc/v1/food/170457"
+        assert mock_get.call_args.kwargs["params"] == {"api_key": "fake-key", "format": "abridged"}
+        assert food["fdcId"] == 170457
+        assert food["description"] == "Tomatoes, red, ripe, raw, year round average"
+        assert food["dataType"] == "SR Legacy"
+        micros = extract_micros_from_usda(food)
+        assert micros["vitamin_k_mcg"] == 7.9
+        # A nutrient listed without an amount is not measured, never 0.0
+        assert micros["b12_cobalamin_mcg"] is None
+
+    def test_unknown_id_returns_none(self, mocker):
+        mock_get = mocker.patch("omni_pilot.enricher.requests.get")
+        mock_get.return_value.status_code = 404
+        assert fetch_usda_food(999999999, "fake-key") is None
+
+    def test_server_error_returns_none(self, mocker):
+        mock_get = mocker.patch("omni_pilot.enricher.requests.get")
+        mock_get.return_value.status_code = 500
+        mock_get.return_value.raise_for_status.side_effect = requests.HTTPError("500")
+        assert fetch_usda_food(170457, "fake-key") is None
+
+    def test_request_failure_returns_none(self, mocker):
+        mocker.patch("omni_pilot.enricher.requests.get", side_effect=requests.ConnectionError("offline"))
+        assert fetch_usda_food(170457, "fake-key") is None
+
+    def test_rate_limit_is_retried_once(self, mocker):
+        limited = mocker.Mock(status_code=429)
+        ok = mocker.Mock(status_code=200)
+        ok.json.return_value = ABRIDGED_TOMATO
+        mock_get = mocker.patch("omni_pilot.enricher.requests.get", side_effect=[limited, ok])
+        mocker.patch("omni_pilot.enricher.time.sleep")
+
+        assert fetch_usda_food(170457, "fake-key")["fdcId"] == 170457
+        assert mock_get.call_count == 2
+
+
+class TestGetUsdaFood:
+    TOMATO_HIT = _usda_hit(170457, "Tomatoes, red, ripe, raw", 0.88, 0.2, 3.89, vitamin_a=42.0)
+
+    def test_fetches_extracts_and_caches_by_id(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.fetch_usda_food", return_value=self.TOMATO_HIT)
+
+        food = get_usda_food(170457, db, "fake-key")
+
+        assert food["fdc_id"] == 170457
+        assert food["usda_name"] == "Tomatoes, red, ripe, raw"
+        assert food["usda_dataset"] == "SR Legacy"
+        assert food["per_100g"]["vitamin_a_mcg"] == 42.0
+        assert food["usda_macros"] == {"protein_g": 0.88, "fat_g": 0.2, "carbs_g": 3.89, "fiber_g": None}
+        cached = db.table("usda_foods").all()
+        assert len(cached) == 1
+        assert cached[0]["fdc_id"] == 170457
+        assert "last_updated" in cached[0]
+        # The food-name cache (default table) is untouched
+        assert db.all() == []
+
+    def test_cached_food_is_used_without_fetching(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.fetch_usda_food", return_value=self.TOMATO_HIT)
+        get_usda_food(170457, db, "fake-key")
+        mock_fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food")
+
+        food = get_usda_food(170457, db, "fake-key")
+
+        mock_fetch.assert_not_called()
+        assert food["usda_name"] == "Tomatoes, red, ripe, raw"
+        assert food["per_100g"]["vitamin_a_mcg"] == 42.0
+
+    def test_failed_fetch_caches_nothing(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.fetch_usda_food", return_value=None)
+
+        assert get_usda_food(170457, db, "fake-key") is None
+        assert db.table("usda_foods").all() == []
 
 
 class TestSearchUsda:

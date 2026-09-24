@@ -11,7 +11,7 @@ import requests
 from tinydb import Query, TinyDB
 
 from omni_pilot import matcher
-from omni_pilot.matcher import Candidate, LoggedMacros
+from omni_pilot.matcher import Candidate, LoggedMacros, UsdaMacros
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,14 @@ class FoodMatch(TypedDict):
     usda_name: str
     confidence: str  # "good" | "weak" | "no_macros" | "unverified"
     macro_distance: float | None
+
+
+class UsdaFood(TypedDict):
+    fdc_id: int
+    usda_name: str
+    usda_dataset: str
+    per_100g: dict[str, float | None]
+    usda_macros: UsdaMacros
 
 
 # Maps our internal nutrient keys to USDA nutrient numbers.
@@ -101,11 +109,25 @@ USDA_NUTRIENT_MAP: dict[str, str] = {
 _USDA_NUMBER_TO_KEY = {v: k for k, v in USDA_NUTRIENT_MAP.items()}
 
 USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
+USDA_FOOD_URL = "https://api.nal.usda.gov/fdc/v1/food/{fdc_id}"
+# Ingredients of custom foods, keyed by FDC ID. An ID always names the same
+# food, so entries here are never invalidated.
+USDA_FOODS_TABLE = "usda_foods"
 
 
 def clean_query(query: str) -> str:
     """Strip characters USDA's search endpoint rejects, collapsing whitespace."""
     return " ".join(_UNSAFE_QUERY_CHARS.sub(" ", query).split())
+
+
+def _usda_get(url: str, params: dict) -> requests.Response:
+    """GET from the USDA API, waiting and retrying once on a rate limit (429)."""
+    resp = requests.get(url, params=params, timeout=30)
+    if resp.status_code == 429:
+        logger.warning("USDA API rate limit hit, waiting 5 seconds...")
+        time.sleep(5)
+        resp = requests.get(url, params=params, timeout=30)
+    return resp
 
 
 def search_usda(query: str, api_key: str) -> list[dict] | None:
@@ -129,11 +151,7 @@ def search_usda(query: str, api_key: str) -> list[dict] | None:
     }
 
     try:
-        resp = requests.get(USDA_SEARCH_URL, params=params, timeout=30)
-        if resp.status_code == 429:
-            logger.warning("USDA API rate limit hit, waiting 5 seconds...")
-            time.sleep(5)
-            resp = requests.get(USDA_SEARCH_URL, params=params, timeout=30)
+        resp = _usda_get(USDA_SEARCH_URL, params)
         resp.raise_for_status()
     except requests.RequestException as e:
         logger.error("USDA API request failed for '%s': %s", cleaned, e)
@@ -218,6 +236,77 @@ def extract_micros_from_usda(usda_food: dict) -> dict[str, float | None]:
         result[our_key] = nutrient_lookup.get(usda_number)
 
     return result
+
+
+def _usda_macros(usda_food: dict) -> UsdaMacros:
+    return UsdaMacros(
+        protein_g=_nutrient_value(usda_food, "203"),
+        fat_g=_nutrient_value(usda_food, "204"),
+        carbs_g=_nutrient_value(usda_food, "205"),
+        fiber_g=_nutrient_value(usda_food, "291"),
+    )
+
+
+def fetch_usda_food(fdc_id: int, api_key: str) -> dict | None:
+    """Fetch one USDA food by its FoodData Central ID.
+
+    The abridged response names nutrients "number"/"amount"; they are
+    converted to the search endpoint's "nutrientNumber"/"value" so the
+    search-hit helpers read the result unchanged. Returns None on any
+    failure; a 404 means the ID itself is wrong.
+    """
+    params = {"api_key": api_key, "format": "abridged"}
+    try:
+        resp = _usda_get(USDA_FOOD_URL.format(fdc_id=fdc_id), params)
+        if resp.status_code == 404:
+            logger.error("USDA has no food with FDC ID %s — check custom_foods.yaml", fdc_id)
+            return None
+        resp.raise_for_status()
+        food = resp.json()
+    except requests.RequestException as e:
+        logger.error("USDA request failed for FDC ID %s: %s", fdc_id, e)
+        return None
+    return {
+        "fdcId": food.get("fdcId", fdc_id),
+        "description": food.get("description", ""),
+        "dataType": food.get("dataType", ""),
+        "foodNutrients": [
+            {"nutrientNumber": str(n.get("number", "")), "value": n.get("amount")}
+            for n in food.get("foodNutrients", [])
+        ],
+    }
+
+
+def get_usda_food(fdc_id: int, db: TinyDB, api_key: str) -> UsdaFood | None:
+    """Get a USDA food by ID from the usda_foods cache, fetching it on a miss.
+
+    A cached entry is always reused. A failed fetch caches nothing, so it is
+    retried on the next run.
+    """
+    table = db.table(USDA_FOODS_TABLE)
+    cached = table.search(Query().fdc_id == fdc_id)
+    if cached:
+        entry = cached[0]
+        return UsdaFood(
+            fdc_id=entry["fdc_id"],
+            usda_name=entry["usda_name"],
+            usda_dataset=entry["usda_dataset"],
+            per_100g=entry["per_100g"],
+            usda_macros=entry["usda_macros"],
+        )
+
+    raw = fetch_usda_food(fdc_id, api_key)
+    if raw is None:
+        return None
+    food = UsdaFood(
+        fdc_id=fdc_id,
+        usda_name=raw["description"],
+        usda_dataset=raw["dataType"],
+        per_100g=extract_micros_from_usda(raw),
+        usda_macros=_usda_macros(raw),
+    )
+    table.insert({**food, "last_updated": str(date.today())})
+    return food
 
 
 def _is_current(entry: dict) -> bool:
