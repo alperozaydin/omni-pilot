@@ -47,8 +47,20 @@ def _make_analysis_result() -> dict:
             "unresolved_entries": 4,
             "skipped_foods": ["Quick Add", "Dessert, Prepared"],
             "unresolved_foods": ["Unknown Thing"],
+            "low_confidence_foods": [],
+            "low_confidence_weight_pct": 0.0,
         },
     }
+
+
+def _make_analysis_result_with_low_confidence() -> dict:
+    result = _make_analysis_result()
+    result["coverage"]["low_confidence_foods"] = [
+        {"name": "Salzlakenkaese salat", "usda_name": "Cheese, feta", "macro_distance": 3.96, "grams": 2084.0},
+        {"name": "Paprika [red]", "usda_name": "Fish, tuna salad", "macro_distance": None, "grams": 164.0},
+    ]
+    result["coverage"]["low_confidence_weight_pct"] = 18.4
+    return result
 
 
 def _make_analysis_result_without_floor() -> dict:
@@ -162,4 +174,44 @@ class TestHtmlReport:
         assert '<th class="data-col">Data</th>' in html
         assert '<td class="data-col">\n                    —\n                </td>' in html
 
+
+class TestLowConfidenceWarning:
+    def test_terminal_names_weak_matches_with_weight_share(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        settings = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+        print_terminal_report(_make_analysis_result_with_low_confidence(), settings)
+        out = capsys.readouterr().out
+        assert "Low-confidence matches (18% of analysed weight)" in out
+        assert "Salzlakenkaese salat → Cheese, feta (off 396%)" in out
+        # No distance: no "(off ...)", and brackets in names are printed, not parsed as markup
+        assert "Paprika [red] → Fish, tuna salad" in out
+        assert "Fish, tuna salad (off" not in out
+
+    def test_terminal_omits_warning_when_all_matches_are_good(self, capsys):
+        settings = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+        print_terminal_report(_make_analysis_result(), settings)
+        assert "Low-confidence" not in capsys.readouterr().out
+
+    def test_html_names_weak_matches(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(_make_analysis_result_with_low_confidence(), html_path)
+        with open(html_path) as f:
+            html = f.read()
+        assert "Low-confidence matches (18% of analysed weight)" in html
+        assert "Salzlakenkaese salat → Cheese, feta (off 396%)" in html
+
+    def test_html_omits_warning_when_all_matches_are_good(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(_make_analysis_result(), html_path)
+        with open(html_path) as f:
+            assert "Low-confidence" not in f.read()
+
+    def test_html_shows_warnings_block_for_low_confidence_alone(self, tmp_path):
+        result = _make_analysis_result_with_low_confidence()
+        result["coverage"]["skipped_foods"] = []
+        result["coverage"]["unresolved_foods"] = []
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(result, html_path)
+        with open(html_path) as f:
+            assert "Low-confidence matches" in f.read()
 

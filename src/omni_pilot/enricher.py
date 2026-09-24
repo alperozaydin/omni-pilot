@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date
 from typing import TypedDict
@@ -9,7 +10,22 @@ from typing import TypedDict
 import requests
 from tinydb import Query, TinyDB
 
+from omni_pilot import matcher
+from omni_pilot.matcher import Candidate, LoggedMacros
+
 logger = logging.getLogger(__name__)
+
+# Bump whenever the candidate-picking logic changes in a way that should
+# re-pick cached foods: entries stamped with an older version are re-matched.
+MATCH_VERSION = 1
+SEARCH_PAGE_SIZE = 25
+# USDA's search endpoint rejects "/" and intermittently rejects brackets (HTTP 400).
+_UNSAFE_QUERY_CHARS = re.compile(r"[()\[\]{}/\\]")
+
+
+class LowConfidenceMatch(TypedDict):
+    usda_name: str
+    macro_distance: float | None
 
 
 class EnrichmentResult(TypedDict):
@@ -22,6 +38,16 @@ class EnrichmentResult(TypedDict):
     profiles: dict[str, dict[str, float | None]]
     skipped: set[str]
     unresolved: set[str]
+    # Resolved foods whose USDA match fits the logged macros poorly. They stay
+    # in profiles and are counted; the report names them.
+    low_confidence: dict[str, LowConfidenceMatch]
+
+
+class FoodMatch(TypedDict):
+    per_100g: dict[str, float | None]
+    usda_name: str
+    confidence: str  # "good" | "weak" | "no_macros" | "unverified"
+    macro_distance: float | None
 
 
 # Maps our internal nutrient keys to USDA nutrient numbers.
@@ -77,17 +103,29 @@ _USDA_NUMBER_TO_KEY = {v: k for k, v in USDA_NUTRIENT_MAP.items()}
 USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 
 
-def search_usda(query: str, api_key: str) -> dict | None:
-    """Search USDA FoodData Central for a food.
+def clean_query(query: str) -> str:
+    """Strip characters USDA's search endpoint rejects, collapsing whitespace."""
+    return " ".join(_UNSAFE_QUERY_CHARS.sub(" ", query).split())
 
-    Returns the best match food dict, or None if no results.
-    Prefers SR Legacy and Foundation datasets.
+
+def search_usda(query: str, api_key: str) -> list[dict] | None:
+    """Search USDA FoodData Central (SR Legacy and Foundation datasets).
+
+    Returns up to SEARCH_PAGE_SIZE foods in USDA's ranking order, an empty
+    list when there are no results (including an empty query after
+    cleaning), or None when the request itself fails. None is kept distinct
+    from [] so a caller can tell "nothing more to find" from "couldn't ask".
     """
+    cleaned = clean_query(query)
+    if not cleaned:
+        logger.warning("Empty USDA query after cleaning: '%s'", query)
+        return []
+
     params = {
         "api_key": api_key,
-        "query": query,
+        "query": cleaned,
         "dataType": "SR Legacy,Foundation",
-        "pageSize": 5,
+        "pageSize": SEARCH_PAGE_SIZE,
     }
 
     try:
@@ -98,17 +136,66 @@ def search_usda(query: str, api_key: str) -> dict | None:
             resp = requests.get(USDA_SEARCH_URL, params=params, timeout=30)
         resp.raise_for_status()
     except requests.RequestException as e:
-        logger.error("USDA API request failed for '%s': %s", query, e)
+        logger.error("USDA API request failed for '%s': %s", cleaned, e)
         return None
 
-    data = resp.json()
-    foods = data.get("foods", [])
+    foods = resp.json().get("foods", [])
     if not foods:
-        logger.warning("No USDA results for query: '%s'", query)
-        return None
+        logger.warning("No USDA results for query: '%s'", cleaned)
+    return foods
 
-    # Return the first (best) match
-    return foods[0]
+
+def _nutrient_value(usda_food: dict, number: str) -> float | None:
+    for fn in usda_food.get("foodNutrients", []):
+        if str(fn.get("nutrientNumber", "")) == number and fn.get("value") is not None:
+            return float(fn["value"])
+    return None
+
+
+def get_food_candidates(query: str, api_key: str) -> tuple[list[Candidate], bool]:
+    """Collect USDA candidates for a query, ranked, without duplicates.
+
+    Hits for the query itself come first, then hits for its head words alone
+    (e.g. "chickpea"), which surface forms the full query ranks out of view.
+
+    Also returns whether the set is complete. It is incomplete only when the
+    head-word search fails outright (as opposed to running and finding
+    nothing) — a pick made from an incomplete set should not be trusted as
+    final. Search 1 failing or finding nothing yields no candidates at all,
+    which is unaffected by completeness.
+    """
+    hits = search_usda(query, api_key)
+    if not hits:
+        return [], True
+    head, _ = matcher.head_words(query)
+    head_query = " ".join(head)
+    complete = True
+    if head_query and head_query != clean_query(query).lower():
+        head_hits = search_usda(head_query, api_key)
+        if head_hits is None:
+            complete = False
+        else:
+            hits = hits + head_hits
+
+    candidates: list[Candidate] = []
+    seen_ids: set = set()
+    for hit in hits:
+        fdc_id = hit.get("fdcId")
+        if fdc_id in seen_ids:
+            continue
+        seen_ids.add(fdc_id)
+        candidates.append(Candidate(
+            fdc_id=fdc_id,
+            description=hit.get("description", ""),
+            data_type=hit.get("dataType", ""),
+            rank=len(candidates),
+            protein_g=_nutrient_value(hit, "203"),
+            fat_g=_nutrient_value(hit, "204"),
+            carbs_g=_nutrient_value(hit, "205"),
+            fiber_g=_nutrient_value(hit, "291"),
+            raw=hit,
+        ))
+    return candidates, complete
 
 
 def extract_micros_from_usda(usda_food: dict) -> dict[str, float | None]:
@@ -133,64 +220,132 @@ def extract_micros_from_usda(usda_food: dict) -> dict[str, float | None]:
     return result
 
 
-def get_food_micros(
+def _is_current(entry: dict) -> bool:
+    """Whether a cache entry's match_version is at least the current one.
+
+    ">=", not "==": a device running older code must not re-pick an entry a
+    newer device already stamped (and vice versa after the next version
+    bump), or the two would keep rewriting each other's matches forever.
+    """
+    return entry.get("match_version", 0) >= MATCH_VERSION
+
+
+def _match_from_entry(entry: dict, confidence: str | None = None) -> FoodMatch:
+    return FoodMatch(
+        per_100g=entry["per_100g"],
+        usda_name=entry.get("usda_name", ""),
+        confidence=confidence or entry.get("confidence", ""),
+        macro_distance=entry.get("macro_distance"),
+    )
+
+
+def get_food_match(
     food_name: str,
     usda_query: str,
+    logged: LoggedMacros | None,
     db: TinyDB,
     api_key: str,
-) -> dict[str, float | None] | None:
-    """Get per-100g micro profile for a food.
+) -> FoodMatch | None:
+    """Get the USDA match and per-100g micro profile for a food.
 
-    Checks TinyDB cache first, then queries USDA API.
-    Returns None if the food cannot be resolved.
+    A cache entry is reused only when both its query is current and its
+    match_version is at least the current one (see `_is_current`). An entry
+    picked by older matching logic is re-picked, but kept (as "unverified")
+    if the re-pick fails, so a network hiccup never turns a known food into
+    an unresolved one. Returns None if the food cannot be resolved at all.
+
+    A pick made from an incomplete candidate set (the head-word search
+    failed) is cached but left without `match_version`, so it is treated as
+    outdated and retried on the next run instead of being trusted as final.
     """
     Food = Query()
+    stale_entry = None
     cached = db.search(Food.original_name == food_name)
     if cached:
-        if cached[0].get("usda_query") == usda_query:
-            return cached[0]["per_100g"]
+        entry = cached[0]
+        if entry.get("usda_query") == usda_query:
+            if _is_current(entry):
+                return _match_from_entry(entry)
+            stale_entry = entry
         else:
-            # Mapping changed, invalidate cache
+            # Mapping changed: the old entry describes a different query
             logger.info("Mapping changed for '%s', refetching...", food_name)
             db.remove(Food.original_name == food_name)
 
-    # Query USDA
-    usda_food = search_usda(usda_query, api_key)
-    if usda_food is None:
+    candidates, complete = get_food_candidates(usda_query, api_key)
+    pick = matcher.pick_best(candidates, usda_query, logged)
+    if pick is None:
+        if stale_entry is not None:
+            logger.warning("Re-matching '%s' failed; keeping its previous USDA match", food_name)
+            return _match_from_entry(stale_entry, confidence="unverified")
         return None
 
-    micros = extract_micros_from_usda(usda_food)
-
-    # Determine confidence
-    confidence = "direct" if usda_query == food_name else "mapped"
-
-    # Cache in TinyDB
-    db.insert({
+    candidate = pick["candidate"]
+    micros = extract_micros_from_usda(candidate["raw"])
+    entry_to_cache = {
         "original_name": food_name,
         "usda_query": usda_query,
-        "usda_name": usda_food.get("description", ""),
-        "usda_fdc_id": usda_food.get("fdcId"),
-        "usda_dataset": usda_food.get("dataType", ""),
+        "usda_name": candidate["description"],
+        "usda_fdc_id": candidate["fdc_id"],
+        "usda_dataset": candidate["data_type"],
         "per_100g": micros,
-        "confidence": confidence,
+        "confidence": pick["confidence"],
+        "macro_distance": pick["macro_distance"],
+        "usda_macros": {
+            "protein_g": candidate["protein_g"],
+            "fat_g": candidate["fat_g"],
+            "carbs_g": candidate["carbs_g"],
+            "fiber_g": candidate["fiber_g"],
+        },
         "last_updated": str(date.today()),
-    })
+    }
+    if complete:
+        entry_to_cache["match_version"] = MATCH_VERSION
+    else:
+        logger.warning(
+            "Caching an unstamped pick for '%s': the candidate set was incomplete", food_name
+        )
+    db.upsert(entry_to_cache, Food.original_name == food_name)
 
-    return micros
+    return FoodMatch(
+        per_100g=micros,
+        usda_name=candidate["description"],
+        confidence=pick["confidence"],
+        macro_distance=pick["macro_distance"],
+    )
+
+
+def count_outdated_matches(food_names: list[str], mappings: dict[str, str], db: TinyDB) -> int:
+    """Count cached foods whose query is current but whose match_version is not."""
+    Food = Query()
+    outdated = 0
+    for food_name in food_names:
+        mapping = mappings.get(food_name, "")
+        if mapping == "skip":
+            continue
+        query = mapping if mapping else food_name
+        cached = db.search(Food.original_name == food_name)
+        if cached and cached[0].get("usda_query") == query and not _is_current(cached[0]):
+            outdated += 1
+    return outdated
 
 
 def enrich_all_foods(
     food_names: list[str],
     mappings: dict[str, str],
+    logged_macros: dict[str, LoggedMacros],
     db: TinyDB,
     api_key: str,
 ) -> EnrichmentResult:
     """Enrich all foods with USDA micro data.
 
     Resolved foods go into profiles, foods mapped to "skip" into skipped, and
-    foods whose USDA lookup failed into unresolved.
+    foods whose USDA lookup failed into unresolved. Resolved foods whose match
+    is weak are also listed in low_confidence.
     """
-    result: EnrichmentResult = {"profiles": {}, "skipped": set(), "unresolved": set()}
+    result: EnrichmentResult = {
+        "profiles": {}, "skipped": set(), "unresolved": set(), "low_confidence": {},
+    }
 
     for food_name in food_names:
         mapping = mappings.get(food_name, "")
@@ -202,9 +357,9 @@ def enrich_all_foods(
 
         # Use the mapping if provided, otherwise use the original name
         query = mapping if mapping else food_name
-        micros = get_food_micros(food_name, query, db, api_key)
+        match = get_food_match(food_name, query, logged_macros.get(food_name), db, api_key)
 
-        if micros is None:
+        if match is None:
             result["unresolved"].add(food_name)
             logger.warning(
                 "Could not resolve '%s' (query: '%s') — marking as unresolved",
@@ -212,6 +367,11 @@ def enrich_all_foods(
             )
             continue
 
-        result["profiles"][food_name] = micros
+        result["profiles"][food_name] = match["per_100g"]
+        if match["confidence"] == "weak":
+            result["low_confidence"][food_name] = LowConfidenceMatch(
+                usda_name=match["usda_name"],
+                macro_distance=match["macro_distance"],
+            )
 
     return result

@@ -17,7 +17,8 @@ from omni_pilot.config import (
     load_supplements,
     resolve_path,
 )
-from omni_pilot.enricher import enrich_all_foods
+from omni_pilot.enricher import count_outdated_matches, enrich_all_foods
+from omni_pilot.matcher import logged_macros_per_100g
 from omni_pilot.parser import extract_unique_foods, parse_food_log
 from omni_pilot.reporter import generate_html_report, print_terminal_report
 from omni_pilot.translator import resolve_and_sync_mappings
@@ -69,7 +70,11 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     print("Enriching foods with USDA data...")
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
-    enrichment = enrich_all_foods(food_names, mappings, db, api_key)
+    outdated = count_outdated_matches(food_names, mappings, db)
+    if outdated:
+        print(f"  Re-matching {outdated} cached foods with updated USDA matching...")
+    logged_macros = logged_macros_per_100g(entries)
+    enrichment = enrich_all_foods(food_names, mappings, logged_macros, db, api_key)
     print(f"  {len(enrichment['profiles'])}/{len(food_names)} foods resolved.")
 
     # 4. Analyze Micronutrient Intake
