@@ -11,7 +11,8 @@ import requests
 from tinydb import Query, TinyDB
 
 from omni_pilot import matcher
-from omni_pilot.matcher import Candidate, LoggedMacros
+from omni_pilot.custom_foods import CustomFoods, Recipe, no_custom_foods, recipe_macros
+from omni_pilot.matcher import Candidate, LoggedMacros, UsdaMacros
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,19 @@ class LowConfidenceMatch(TypedDict):
     macro_distance: float | None
 
 
+class RecipePart(TypedDict):
+    share: float
+    fdc_id: int
+    usda_name: str
+    per_100g: dict[str, float | None]
+
+
+class CustomFoodMatch(TypedDict):
+    recipe: str
+    parts: list[RecipePart]
+    macro_distance: float | None
+
+
 class EnrichmentResult(TypedDict):
     """Outcome of enriching a set of foods.
 
@@ -41,6 +55,10 @@ class EnrichmentResult(TypedDict):
     # Resolved foods whose USDA match fits the logged macros poorly. They stay
     # in profiles and are counted; the report names them.
     low_confidence: dict[str, LowConfidenceMatch]
+    # Foods covered by a custom recipe, built from its ingredients. They are
+    # never in profiles: the analyzer counts them ingredient by ingredient, so
+    # an ingredient missing a nutrient costs only its own share of coverage.
+    custom: dict[str, CustomFoodMatch]
 
 
 class FoodMatch(TypedDict):
@@ -48,6 +66,14 @@ class FoodMatch(TypedDict):
     usda_name: str
     confidence: str  # "good" | "weak" | "no_macros" | "unverified"
     macro_distance: float | None
+
+
+class UsdaFood(TypedDict):
+    fdc_id: int
+    usda_name: str
+    usda_dataset: str
+    per_100g: dict[str, float | None]
+    usda_macros: UsdaMacros
 
 
 # Maps our internal nutrient keys to USDA nutrient numbers.
@@ -101,11 +127,25 @@ USDA_NUTRIENT_MAP: dict[str, str] = {
 _USDA_NUMBER_TO_KEY = {v: k for k, v in USDA_NUTRIENT_MAP.items()}
 
 USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
+USDA_FOOD_URL = "https://api.nal.usda.gov/fdc/v1/food/{fdc_id}"
+# Ingredients of custom foods, keyed by FDC ID. An ID always names the same
+# food, so entries here are never invalidated.
+USDA_FOODS_TABLE = "usda_foods"
 
 
 def clean_query(query: str) -> str:
     """Strip characters USDA's search endpoint rejects, collapsing whitespace."""
     return " ".join(_UNSAFE_QUERY_CHARS.sub(" ", query).split())
+
+
+def _usda_get(url: str, params: dict) -> requests.Response:
+    """GET from the USDA API, waiting and retrying once on a rate limit (429)."""
+    resp = requests.get(url, params=params, timeout=30)
+    if resp.status_code == 429:
+        logger.warning("USDA API rate limit hit, waiting 5 seconds...")
+        time.sleep(5)
+        resp = requests.get(url, params=params, timeout=30)
+    return resp
 
 
 def search_usda(query: str, api_key: str) -> list[dict] | None:
@@ -129,11 +169,7 @@ def search_usda(query: str, api_key: str) -> list[dict] | None:
     }
 
     try:
-        resp = requests.get(USDA_SEARCH_URL, params=params, timeout=30)
-        if resp.status_code == 429:
-            logger.warning("USDA API rate limit hit, waiting 5 seconds...")
-            time.sleep(5)
-            resp = requests.get(USDA_SEARCH_URL, params=params, timeout=30)
+        resp = _usda_get(USDA_SEARCH_URL, params)
         resp.raise_for_status()
     except requests.RequestException as e:
         logger.error("USDA API request failed for '%s': %s", cleaned, e)
@@ -218,6 +254,77 @@ def extract_micros_from_usda(usda_food: dict) -> dict[str, float | None]:
         result[our_key] = nutrient_lookup.get(usda_number)
 
     return result
+
+
+def _usda_macros(usda_food: dict) -> UsdaMacros:
+    return UsdaMacros(
+        protein_g=_nutrient_value(usda_food, "203"),
+        fat_g=_nutrient_value(usda_food, "204"),
+        carbs_g=_nutrient_value(usda_food, "205"),
+        fiber_g=_nutrient_value(usda_food, "291"),
+    )
+
+
+def fetch_usda_food(fdc_id: int, api_key: str) -> dict | None:
+    """Fetch one USDA food by its FoodData Central ID.
+
+    The abridged response names nutrients "number"/"amount"; they are
+    converted to the search endpoint's "nutrientNumber"/"value" so the
+    search-hit helpers read the result unchanged. Returns None on any
+    failure; a 404 means the ID itself is wrong.
+    """
+    params = {"api_key": api_key, "format": "abridged"}
+    try:
+        resp = _usda_get(USDA_FOOD_URL.format(fdc_id=fdc_id), params)
+        if resp.status_code == 404:
+            logger.error("USDA has no food with FDC ID %s — check custom_foods.yaml", fdc_id)
+            return None
+        resp.raise_for_status()
+        food = resp.json()
+    except requests.RequestException as e:
+        logger.error("USDA request failed for FDC ID %s: %s", fdc_id, e)
+        return None
+    return {
+        "fdcId": food.get("fdcId", fdc_id),
+        "description": food.get("description", ""),
+        "dataType": food.get("dataType", ""),
+        "foodNutrients": [
+            {"nutrientNumber": str(n.get("number", "")), "value": n.get("amount")}
+            for n in food.get("foodNutrients", [])
+        ],
+    }
+
+
+def get_usda_food(fdc_id: int, db: TinyDB, api_key: str) -> UsdaFood | None:
+    """Get a USDA food by ID from the usda_foods cache, fetching it on a miss.
+
+    A cached entry is always reused. A failed fetch caches nothing, so it is
+    retried on the next run.
+    """
+    table = db.table(USDA_FOODS_TABLE)
+    cached = table.search(Query().fdc_id == fdc_id)
+    if cached:
+        entry = cached[0]
+        return UsdaFood(
+            fdc_id=entry["fdc_id"],
+            usda_name=entry["usda_name"],
+            usda_dataset=entry["usda_dataset"],
+            per_100g=entry["per_100g"],
+            usda_macros=entry["usda_macros"],
+        )
+
+    raw = fetch_usda_food(fdc_id, api_key)
+    if raw is None:
+        return None
+    food = UsdaFood(
+        fdc_id=fdc_id,
+        usda_name=raw["description"],
+        usda_dataset=raw["dataType"],
+        per_100g=extract_micros_from_usda(raw),
+        usda_macros=_usda_macros(raw),
+    )
+    table.upsert({**food, "last_updated": str(date.today())}, Query().fdc_id == fdc_id)
+    return food
 
 
 def _is_current(entry: dict) -> bool:
@@ -330,24 +437,80 @@ def count_outdated_matches(food_names: list[str], mappings: dict[str, str], db: 
     return outdated
 
 
+def _recipe_ingredients(
+    recipe: Recipe, db: TinyDB, api_key: str, fetched: dict[int, UsdaFood | None],
+) -> list[tuple[float, UsdaFood]] | None:
+    """Each ingredient's share and USDA food, or None if any is unavailable.
+
+    `fetched` memoises lookups for the run, so an ID that failed isn't
+    requested again for the next food sharing the recipe.
+    """
+    ingredients = []
+    for ingredient in recipe["ingredients"]:
+        fdc_id = ingredient["fdc_id"]
+        if fdc_id not in fetched:
+            fetched[fdc_id] = get_usda_food(fdc_id, db, api_key)
+        food = fetched[fdc_id]
+        if food is None:
+            logger.error("Recipe '%s': USDA food %s is unavailable", recipe["name"], fdc_id)
+            return None
+        ingredients.append((ingredient["share"], food))
+    return ingredients
+
+
+def _custom_food_match(
+    recipe_name: str, ingredients: list[tuple[float, UsdaFood]], logged: LoggedMacros | None,
+) -> CustomFoodMatch:
+    macros = recipe_macros([(share, food["usda_macros"]) for share, food in ingredients])
+    return CustomFoodMatch(
+        recipe=recipe_name,
+        parts=[
+            RecipePart(share=share, fdc_id=food["fdc_id"], usda_name=food["usda_name"], per_100g=food["per_100g"])
+            for share, food in ingredients
+        ],
+        macro_distance=matcher.macro_distance(logged, macros) if logged is not None else None,
+    )
+
+
 def enrich_all_foods(
     food_names: list[str],
     mappings: dict[str, str],
     logged_macros: dict[str, LoggedMacros],
     db: TinyDB,
     api_key: str,
+    custom_foods: CustomFoods | None = None,
 ) -> EnrichmentResult:
     """Enrich all foods with USDA micro data.
 
-    Resolved foods go into profiles, foods mapped to "skip" into skipped, and
+    A food covered by a custom recipe is built from the recipe's ingredients
+    and goes into custom, whatever its mapping says (even "skip"). Otherwise:
+    resolved foods go into profiles, foods mapped to "skip" into skipped, and
     foods whose USDA lookup failed into unresolved. Resolved foods whose match
     is weak are also listed in low_confidence.
     """
+    if custom_foods is None:
+        custom_foods = no_custom_foods()
     result: EnrichmentResult = {
-        "profiles": {}, "skipped": set(), "unresolved": set(), "low_confidence": {},
+        "profiles": {}, "skipped": set(), "unresolved": set(), "low_confidence": {}, "custom": {},
     }
+    fetched: dict[int, UsdaFood | None] = {}
 
     for food_name in food_names:
+        recipe_name = custom_foods["by_food"].get(food_name)
+        if recipe_name is not None:
+            ingredients = _recipe_ingredients(custom_foods["recipes"][recipe_name], db, api_key, fetched)
+            if ingredients is None:
+                result["unresolved"].add(food_name)
+                logger.warning(
+                    "Could not resolve '%s': an ingredient of recipe '%s' is unavailable",
+                    food_name, recipe_name,
+                )
+            else:
+                result["custom"][food_name] = _custom_food_match(
+                    recipe_name, ingredients, logged_macros.get(food_name),
+                )
+            continue
+
         mapping = mappings.get(food_name, "")
 
         if mapping == "skip":

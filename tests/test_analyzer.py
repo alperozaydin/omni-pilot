@@ -567,3 +567,104 @@ class TestLowConfidenceCoverage:
         )
 
         assert result["coverage"]["low_confidence_foods"] == []
+
+
+def _caprese(macro_distance: float | None = 0.1) -> dict:
+    """A CustomFoodMatch: 75% tomatoes, 25% mozzarella (which has no vitamin K value)."""
+    return {
+        "recipe": "caprese",
+        "macro_distance": macro_distance,
+        "parts": [
+            {"share": 0.75, "fdc_id": 170457, "usda_name": "Tomatoes",
+             "per_100g": {"vitamin_k_mcg": 8.0, "omega3_epa_mg": 0.0, "omega3_dha_mg": 0.0}},
+            {"share": 0.25, "fdc_id": 170845, "usda_name": "Mozzarella",
+             "per_100g": {"vitamin_k_mcg": None, "omega3_epa_mg": 0.01, "omega3_dha_mg": 0.02}},
+        ],
+    }
+
+
+class TestCustomFoods:
+    REF_RANGES = {
+        "demographic": {},
+        "nutrients": {
+            "vitamin_k_mcg": {"name": "Vitamin K", "unit": "mcg", "type": "ai", "ai": 120},
+            "omega3_epa_dha_mg": {"name": "EPA+DHA", "unit": "mg", "type": "ai", "ai": 250},
+        },
+    }
+
+    def test_nutrients_are_the_share_weighted_sum_of_parts(self):
+        entries = [{"date": "2026-08-09", "food_name": "Salat Caprese", "total_weight_g": 200.0}]
+
+        result = analyze(entries, enrichment(custom={"Salat Caprese": _caprese()}), self.REF_RANGES)
+
+        # 150 g of tomatoes at 8 mcg/100 g; the mozzarella has no vitamin K value
+        vitamin_k = result["nutrients"]["vitamin_k_mcg"]
+        assert vitamin_k["daily_avg"] == pytest.approx(12.0)
+        # Only the mozzarella's 50 g of 200 g is unmeasured
+        assert vitamin_k["coverage_pct"] == 75.0
+        assert vitamin_k["is_floor"] is True
+        # Combined nutrient per part, EPA/DHA converted from g to mg: 50 g x 30 mg/100 g
+        epa_dha = result["nutrients"]["omega3_epa_dha_mg"]
+        assert epa_dha["daily_avg"] == pytest.approx(15.0)
+        assert epa_dha["coverage_pct"] == 100.0
+
+    def test_custom_entries_count_as_analysed(self):
+        entries = [
+            {"date": "2026-08-09", "food_name": "Salat Caprese", "total_weight_g": 200.0},
+            {"date": "2026-08-09", "food_name": "Feta Salat", "total_weight_g": 200.0},
+        ]
+        low_confidence = {"Feta Salat": {"usda_name": "Cheese, feta", "macro_distance": 3.9}}
+
+        result = analyze(
+            entries,
+            enrichment(
+                {"Feta Salat": {"vitamin_k_mcg": 1.0}},
+                low_confidence=low_confidence,
+                custom={"Salat Caprese": _caprese()},
+            ),
+            self.REF_RANGES,
+        )
+
+        coverage = result["coverage"]
+        assert coverage["mapped_entries"] == 2
+        assert coverage["unresolved_entries"] == 0
+        # The custom food's weight is in the analysed-weight denominator
+        assert coverage["low_confidence_weight_pct"] == 50.0
+
+    def test_custom_recipes_group_foods_by_recipe(self):
+        green_salad = {
+            "recipe": "green_salad",
+            "macro_distance": None,
+            "parts": [{"share": 1.0, "fdc_id": 169249, "usda_name": "Lettuce", "per_100g": {"vitamin_k_mcg": 126.0}}],
+        }
+        entries = [
+            {"date": "2026-08-09", "food_name": "Salat Caprese", "total_weight_g": 264.0},
+            {"date": "2026-08-09", "food_name": "Misch Salat Rohkost", "total_weight_g": 250.0},
+            {"date": "2026-08-10", "food_name": "Misch Salat Rohkost", "total_weight_g": 250.0},
+            {"date": "2026-08-10", "food_name": "Salat Manhattan", "total_weight_g": 120.0},
+            {"date": "2026-08-10", "food_name": "Salat Unused", "total_weight_g": 0.0},
+        ]
+        custom = {
+            "Salat Caprese": _caprese(0.4),
+            "Misch Salat Rohkost": {**green_salad, "macro_distance": 0.12},
+            "Salat Manhattan": green_salad,
+            "Salat Unused": green_salad,
+        }
+
+        result = analyze(entries, enrichment(custom=custom), self.REF_RANGES)
+
+        recipes = result["coverage"]["custom_recipes"]
+        assert [r["recipe"] for r in recipes] == ["green_salad", "caprese"]  # 620 g before 264 g
+        assert recipes[0]["foods"] == [
+            {"name": "Misch Salat Rohkost", "grams": 500.0, "macro_distance": 0.12},
+            {"name": "Salat Manhattan", "grams": 120.0, "macro_distance": None},
+        ]  # the 0 g food is left out
+        assert recipes[1]["ingredients"] == [
+            {"fdc_id": 170457, "usda_name": "Tomatoes", "share_pct": 75.0},
+            {"fdc_id": 170845, "usda_name": "Mozzarella", "share_pct": 25.0},
+        ]
+
+    def test_no_custom_foods_gives_empty_list(self):
+        entries = [{"date": "2026-08-09", "food_name": "Eggs", "total_weight_g": 100.0}]
+        result = analyze(entries, enrichment({"Eggs": {"vitamin_k_mcg": 0.3}}), self.REF_RANGES)
+        assert result["coverage"]["custom_recipes"] == []

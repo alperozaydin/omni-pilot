@@ -13,8 +13,11 @@ gemini_api_key: "YOUR_GEMINI_API_KEY_HERE"
 # Storage paths (supports ~ and absolute/relative paths)
 database_path: "db/food_db.json"
 mappings_path: "config/food_mappings.yaml"
+# Optional custom food recipes (see config/custom_foods.example.yaml)
+custom_foods_path: "config/custom_foods.yaml"
 # Example for macOS iCloud sync:
 # database_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/db/food_db.json"
 # mappings_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/config/food_mappings.yaml"
+# custom_foods_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/config/custom_foods.yaml"
 
 

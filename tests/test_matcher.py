@@ -257,3 +257,9 @@ class TestPickBest:
 
     def test_no_candidates_returns_none(self):
         assert pick_best([], "anything", _logged(100.0, 1.0, 1.0, 1.0)) is None
+
+
+def test_macro_distance_accepts_plain_macros():
+    macros = {"protein_g": 6.0, "fat_g": 5.0, "carbs_g": 3.0, "fiber_g": None}
+    logged = {"kcal": 74.0, "protein_g": 4.9, "fat_g": 4.2, "carbs_g": 3.0}
+    assert macro_distance(logged, macros) == pytest.approx((4 * 1.1 + 9 * 0.8) / 74.0)
