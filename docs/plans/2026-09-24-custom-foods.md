@@ -1874,6 +1874,7 @@ def workspace(tmp_path, monkeypatch, mocker):
         "custom_foods_path": str(tmp_path / "custom_foods.yaml"),
     }))
     monkeypatch.chdir(tmp_path)  # reports/ and the default supplements path resolve inside tmp_path
+    monkeypatch.setenv("COLUMNS", "300")  # keep Rich from wrapping the Custom foods line
 
     usda = FakeUsda()
     mocker.patch("omni_pilot.enricher.requests.get", side_effect=usda)
@@ -1907,7 +1908,8 @@ def test_custom_foods_end_to_end(workspace, capsys):
     assert sorted(usda.fetched_ids) == [169249, 170457, 170845]
     assert usda.searches and all("rice" in query for query in usda.searches)
     assert "3/4 foods resolved." in out
-    assert "Custom foods: Misch Salat Rohkost → green_salad" in out
+    # Recipes are listed heaviest first: caprese (264 g) before green_salad (250 g)
+    assert "Custom foods: Salat Caprese → caprese (⚠ off 27%), Misch Salat Rohkost → green_salad (off 6%)" in out
 
     nutrients = result["nutrients"]
     # Caprese: 198 g tomato x 10 + 66 g mozzarella x 505; lettuce 250 g x 36; rice 200 g x 10 (mg/100 g)
@@ -1955,6 +1957,7 @@ Tasks 1–6 already built everything, so this test should pass the first time. I
 - calcium, run 1: 19.8 + 333.3 + 90 + 20 = 463.1;
 - vitamin K coverage: 648 / 714 = 90.8%;
 - Caprese macro distance: 0.271 at 75/25 and 0.036 at 82/18, against the logged P 4.89 / F 4.20 / C 2.99 per 100 g.
+- Misch Salat Rohkost macro distance: 3.01 / 50 (the `KCAL_FLOOR`) = 0.060, so "off 6%" with no ⚠.
 
 - [ ] **Step 3: Check that the test can fail**
 
