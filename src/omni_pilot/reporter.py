@@ -9,6 +9,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from omni_pilot.matcher import GOOD_DISTANCE
+
 # Status emoji and color mapping
 STATUS_DISPLAY = {
     "ok": ("🟢", "OK", "green"),
@@ -83,6 +85,29 @@ def _low_confidence_line(coverage: dict) -> str | None:
         described.append(text)
     share = coverage["low_confidence_weight_pct"]
     return f"Low-confidence matches ({share:.0f}% of analysed weight): {', '.join(described)}"
+
+
+def _macro_check(distance: float | None, prefix: str = "") -> str:
+    """How a custom food's recipe macros compare with the logged ones."""
+    if distance is None:
+        return f"{prefix}not checked"
+    text = f"{prefix}off {distance * 100:.0f}%"
+    return f"⚠ {text}" if distance > GOOD_DISTANCE else text
+
+
+def _custom_foods_line(coverage: dict) -> tuple[str, bool] | None:
+    """Name each custom food with its recipe and macro check, and whether any is off."""
+    recipes = coverage["custom_recipes"]
+    if not recipes:
+        return None
+    described = []
+    flagged = False
+    for recipe in recipes:
+        for food in recipe["foods"]:
+            distance = food["macro_distance"]
+            described.append(f"{food['name']} → {recipe['recipe']} ({_macro_check(distance)})")
+            flagged = flagged or (distance is not None and distance > GOOD_DISTANCE)
+    return f"Custom foods: {', '.join(described)}", flagged
 
 
 def print_terminal_report(result: dict, settings: dict) -> None:
@@ -185,6 +210,12 @@ def print_terminal_report(result: dict, settings: dict) -> None:
         # Text, not a markup string: food and USDA names can contain "[...]".
         console.print(Text(f"  ⚠ {low_confidence_line}", style="yellow"))
 
+    custom_foods_line = _custom_foods_line(coverage)
+    if custom_foods_line:
+        line, flagged = custom_foods_line
+        # Text, not a markup string: food names can contain "[...]".
+        console.print(Text(f"  {line}", style="yellow" if flagged else "dim"))
+
 
 HTML_TEMPLATE = """\
 <!DOCTYPE html>
@@ -224,6 +255,11 @@ HTML_TEMPLATE = """\
         .footnote { margin-top: 1rem; color: #8892b0; font-size: 0.85rem; }
         .warnings { margin-top: 2rem; padding: 1rem; background: #16213e; border-radius: 8px; }
         .warnings p { margin: 0.3rem 0; font-size: 0.9rem; }
+        .custom-foods { margin-top: 2rem; padding: 1rem; background: #16213e; border-radius: 8px; font-size: 0.9rem; }
+        .custom-foods h2 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+        .custom-foods h3 { font-size: 1rem; margin: 1rem 0 0.3rem; color: #ccd6f6; }
+        .custom-foods ul { margin: 0.2rem 0 0.5rem 1.5rem; }
+        .custom-foods .used-for { color: #8892b0; }
     </style>
 </head>
 <body>
@@ -276,6 +312,25 @@ HTML_TEMPLATE = """\
         {% if low_confidence_line %}<p>⚠ {{ low_confidence_line }}</p>{% endif %}
     </div>
     {% endif %}
+    {% if custom_recipes %}
+    <div class="custom-foods">
+        <h2>Custom foods</h2>
+        {% for r in custom_recipes %}
+        <h3>{{ r.recipe }}</h3>
+        <ul>
+            {% for i in r.ingredients %}
+            <li>{{ i.usda_name }} (FDC {{ i.fdc_id }}) — {{ "%.0f"|format(i.share_pct) }}%</li>
+            {% endfor %}
+        </ul>
+        <p class="used-for">Used for:</p>
+        <ul>
+            {% for f in r.foods %}
+            <li>{{ f.name }} — {{ "%.0f"|format(f.grams) }} g — {{ f.check }}</li>
+            {% endfor %}
+        </ul>
+        {% endfor %}
+    </div>
+    {% endif %}
 </body>
 </html>
 """
@@ -312,6 +367,17 @@ def generate_html_report(result: dict, output_path: str) -> None:
         skipped_foods=coverage["skipped_foods"],
         unresolved_foods=coverage["unresolved_foods"],
         low_confidence_line=_low_confidence_line(coverage),
+        custom_recipes=[
+            {
+                "recipe": recipe["recipe"],
+                "ingredients": recipe["ingredients"],
+                "foods": [
+                    {**food, "check": _macro_check(food["macro_distance"], "macros ")}
+                    for food in recipe["foods"]
+                ],
+            }
+            for recipe in coverage["custom_recipes"]
+        ],
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)

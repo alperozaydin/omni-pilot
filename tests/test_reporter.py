@@ -49,6 +49,7 @@ def _make_analysis_result() -> dict:
             "unresolved_foods": ["Unknown Thing"],
             "low_confidence_foods": [],
             "low_confidence_weight_pct": 0.0,
+            "custom_recipes": [],
         },
     }
 
@@ -214,4 +215,67 @@ class TestLowConfidenceWarning:
         generate_html_report(result, html_path)
         with open(html_path) as f:
             assert "Low-confidence matches" in f.read()
+
+
+def _make_analysis_result_with_custom_foods() -> dict:
+    result = _make_analysis_result()
+    result["coverage"]["custom_recipes"] = [
+        {
+            "recipe": "green_salad",
+            "ingredients": [
+                {"fdc_id": 169249, "usda_name": "Lettuce, green leaf, raw", "share_pct": 60.0},
+                {"fdc_id": 170393, "usda_name": "Carrots, raw", "share_pct": 40.0},
+            ],
+            "foods": [
+                {"name": "Misch Salat Rohkost", "grams": 750.0, "macro_distance": 0.12},
+                {"name": "Salat [Manhattan]", "grams": 120.0, "macro_distance": None},
+            ],
+        },
+        {
+            "recipe": "caprese",
+            "ingredients": [
+                {"fdc_id": 170457, "usda_name": "Tomatoes, red, ripe, raw, year round average", "share_pct": 100.0},
+            ],
+            "foods": [{"name": "Salat Caprese", "grams": 264.0, "macro_distance": 0.4}],
+        },
+    ]
+    return result
+
+
+class TestCustomFoodsReport:
+    SETTINGS = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+
+    def test_terminal_names_each_food_with_recipe_and_macro_check(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        print_terminal_report(_make_analysis_result_with_custom_foods(), self.SETTINGS)
+        out = capsys.readouterr().out
+        assert (
+            "Custom foods: Misch Salat Rohkost → green_salad (off 12%), "
+            "Salat [Manhattan] → green_salad (not checked), "
+            "Salat Caprese → caprese (⚠ off 40%)"
+        ) in out
+
+    def test_terminal_omits_line_without_custom_foods(self, capsys):
+        print_terminal_report(_make_analysis_result(), self.SETTINGS)
+        assert "Custom foods" not in capsys.readouterr().out
+
+    def test_html_lists_recipes_ingredients_and_foods(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(_make_analysis_result_with_custom_foods(), html_path)
+        with open(html_path) as f:
+            html = f.read()
+        assert "<h2>Custom foods</h2>" in html
+        assert "<h3>green_salad</h3>" in html
+        assert "Lettuce, green leaf, raw (FDC 169249) — 60%" in html
+        assert "Misch Salat Rohkost — 750 g — macros off 12%" in html
+        assert "Salat [Manhattan] — 120 g — macros not checked" in html
+        assert "Salat Caprese — 264 g — ⚠ macros off 40%" in html
+        # The section comes after the warnings, at the bottom of the report
+        assert html.index("<h2>Custom foods</h2>") > html.index('<div class="warnings">')
+
+    def test_html_omits_section_without_custom_foods(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(_make_analysis_result(), html_path)
+        with open(html_path) as f:
+            assert "Custom foods" not in f.read()
 
