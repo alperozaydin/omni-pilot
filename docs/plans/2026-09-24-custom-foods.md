@@ -1970,3 +1970,15 @@ Expected: all pass.
 git add tests/test_custom_foods_integration.py
 git commit -m "test: add end-to-end custom foods integration test (BAR-75)"
 ```
+
+---
+
+### After all tasks: hand-off reminder for the user
+
+- [ ] **Remind the user to point the Mac at the iCloud recipe file.** Their Mac `config/settings.yaml` (gitignored, so no task edits it) needs this line next to their other iCloud paths:
+
+```yaml
+custom_foods_path: "~/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/omni-pilot/config/custom_foods.yaml"
+```
+
+The iPhone needs no change: its settings use relative paths from the iCloud `omni-pilot` folder, so the default `config/custom_foods.yaml` already resolves to that file.
