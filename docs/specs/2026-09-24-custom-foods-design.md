@@ -1,6 +1,6 @@
 # Technical Specification: Custom Foods from Fixed USDA Recipes (BAR-75)
 
-**Document Version:** 1.0
+**Document Version:** 1.1 (planning fixes: verified example IDs, `make sync-iphone` exclude, keyword `custom_foods` argument, YAML syntax and non-finite amounts rejected)
 **Date:** 2026-09-24
 **Status:** In Review
 **Linear Issue:** [BAR-75](https://linear.app/knaak/issue/BAR-75/more-deterministic-approach-for-food-query)
@@ -88,7 +88,7 @@ food_names, mappings, logged_macros, CustomFoods ─► enricher.enrich_all_food
 green_salad:
   foods: [Misch Salat Rohkost, Salat Manhattan]
   ingredients:
-    - {fdc_id: 169248, amount: 60}   # lettuce, green leaf, raw
+    - {fdc_id: 169249, amount: 60}   # lettuce, green leaf, raw
     - {fdc_id: 170393, amount: 20}   # carrots, raw
     - {fdc_id: 168409, amount: 20}   # cucumber, with peel, raw
 
@@ -97,7 +97,7 @@ caprese:
   ingredients:
     - {fdc_id: 170457, amount: 55}   # tomatoes, red, ripe, raw
     - {fdc_id: 170845, amount: 18}   # cheese, mozzarella, whole milk
-    - {fdc_id: 169248, amount: 26}   # lettuce, green leaf, raw
+    - {fdc_id: 169249, amount: 26}   # lettuce, green leaf, raw
     - {fdc_id: 171413, amount: 1}    # oil, olive, salad or cooking
 ```
 
@@ -106,6 +106,7 @@ caprese:
 - `ingredients`: each has an `fdc_id` (a USDA FoodData Central ID) and an `amount` (a relative weight).
 - An ingredient's **share** is `amount / sum of the recipe's amounts`. Amounts don't need to add up to 100.
 - The same `fdc_id` may appear in several recipes.
+- All IDs above were verified against USDA. (During design, 169248 was first guessed for green leaf lettuce; it is iceberg. The report's USDA-name column exists to catch exactly this.)
 
 ### 3.2 Loading: `load_custom_foods(path) -> CustomFoods`
 
@@ -128,13 +129,14 @@ class CustomFoods(TypedDict):
 - Anything else that is invalid raises `CustomFoodsError` (a `ValueError`). Its message names the recipe and the problem. The CLI prints it and exits with status 1, the same way it handles a missing USDA key. A broken recipe must not silently fall back to a USDA search.
 
 A file is invalid when any of these hold:
+- it is not valid YAML (the parser's message is included);
 - the top level is not a mapping;
 - a recipe is not a mapping, or has a key other than `foods` and `ingredients` (this catches typos such as `ingredient:`);
 - `foods` is missing, empty, or contains something other than non-empty strings;
 - `ingredients` is missing or empty;
 - an ingredient has a key other than `fdc_id` and `amount`, or lacks either one;
 - an `fdc_id` is not a positive integer (a YAML boolean is rejected even though Python treats it as an int);
-- an `amount` is not a positive number;
+- an `amount` is not a positive, finite number (YAML's `.nan` and `.inf` are rejected);
 - the same `fdc_id` appears twice in one recipe (almost certainly a copy mistake);
 - the same food name appears in two recipes, whether in the same recipe or in different ones.
 
@@ -143,6 +145,7 @@ A file is invalid when any of these hold:
 - New setting `custom_foods_path`, resolved with `config.resolve_path` like `mappings_path`. The default is `config/custom_foods.yaml`.
 - `config/settings.example.yaml` gets the key, plus a commented iCloud example next to the existing ones.
 - The CLI prints the resolved path alongside the database and mappings paths.
+- `make sync-iphone` copies the repo into the iCloud folder with `rsync --delete`, so it gets `--exclude='config/custom_foods.yaml'` next to the other personal config files. Without it, a real file kept in the iCloud `config/` folder would be deleted on every sync.
 - `config/custom_foods.example.yaml` is committed. It contains the format comment and an active example recipe whose IDs are **verified against USDA while it is written**. A test loads it, so it can't drift into an invalid state.
 
 ---
@@ -193,7 +196,7 @@ class UsdaFood(TypedDict):
 
 ### 5.3 Building a custom food match
 
-For each food claimed by a recipe, `enrich_all_foods` calls `get_usda_food` for every ingredient of its recipe. Each ingredient is fetched at most once per run, even when several foods share the recipe.
+`enrich_all_foods` gains a trailing keyword argument, `custom_foods: CustomFoods | None = None` (no recipes when omitted), so existing callers are unchanged. For each food claimed by a recipe, it calls `get_usda_food` for every ingredient of its recipe. Each ingredient is fetched at most once per run, even when several foods share the recipe.
 
 - **If any ingredient is unavailable,** the food goes into `unresolved`, and an error is logged naming the recipe and the ID. Silently dropping the ingredient would under-report the food, which is the kind of quiet error this change exists to remove.
 - **Otherwise** the food goes into the new `custom` part of the result:
@@ -260,7 +263,7 @@ class CustomFoodUse(TypedDict):
 
 class CustomRecipeUse(TypedDict):
     recipe: str
-    ingredients: list[dict]           # {"fdc_id", "usda_name", "share_pct"} in YAML order
+    ingredients: list[CustomIngredient]  # {fdc_id, usda_name, share_pct}, in YAML order
     foods: list[CustomFoodUse]        # sorted by grams, descending
 
 custom_recipes: list[CustomRecipeUse]   # sorted by total grams, descending
@@ -310,7 +313,7 @@ except CustomFoodsError as e:
 translatable = [f for f in food_names if f not in custom_foods["by_food"]]
 mappings = resolve_and_sync_mappings(translatable, db_path, mappings_path, settings)
 ...
-enrichment = enrich_all_foods(food_names, mappings, logged_macros, custom_foods, db, api_key)
+enrichment = enrich_all_foods(food_names, mappings, logged_macros, db, api_key, custom_foods=custom_foods)
 resolved = len(enrichment["profiles"]) + len(enrichment["custom"])
 print(f"  {resolved}/{len(food_names)} foods resolved.")
 ```
