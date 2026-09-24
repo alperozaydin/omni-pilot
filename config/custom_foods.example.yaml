@@ -1,0 +1,34 @@
+# Custom foods: fixed recipes of USDA ingredients, used instead of a USDA search.
+#
+# Copy this file to the path set as custom_foods_path in settings.yaml
+# (default: config/custom_foods.yaml). The file is optional: without it,
+# every food goes through translation and USDA search as usual.
+#
+# Each recipe has:
+#   foods:        the exact food names from the MacroFactor export that it
+#                 stands for. A food may appear in only one recipe, and a recipe
+#                 overrides any mapping in food_mappings.yaml, including "skip".
+#   ingredients:  USDA FoodData Central foods, each by FDC ID, with an amount.
+#                 Amounts are relative weights (grams of a typical portion, or
+#                 percentages); the app scales them so they add up to 100%.
+#
+# Find FDC IDs at https://fdc.nal.usda.gov. Prefer "SR Legacy" foods, which
+# have the most complete nutrient data, and name each one in a comment. The
+# HTML report lists every ingredient's USDA name, so a wrong ID shows up
+# there, and it compares each recipe's macros with what you logged
+# ("macros off N%").
+
+green_salad:
+  foods: [Misch Salat Rohkost]
+  ingredients:
+    - {fdc_id: 169249, amount: 60}   # Lettuce, green leaf, raw
+    - {fdc_id: 170393, amount: 20}   # Carrots, raw
+    - {fdc_id: 168409, amount: 20}   # Cucumber, with peel, raw
+
+caprese:
+  foods: [Salat Caprese]
+  ingredients:
+    - {fdc_id: 170457, amount: 55}   # Tomatoes, red, ripe, raw, year round average
+    - {fdc_id: 170845, amount: 18}   # Cheese, mozzarella, whole milk
+    - {fdc_id: 169249, amount: 26}   # Lettuce, green leaf, raw
+    - {fdc_id: 171413, amount: 1}    # Oil, olive, salad or cooking

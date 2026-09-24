@@ -59,6 +59,15 @@ class Candidate(TypedDict):
     raw: dict
 
 
+class UsdaMacros(TypedDict):
+    """Per-100 g macros of a USDA food, or of a recipe built from USDA foods."""
+
+    protein_g: float | None
+    fat_g: float | None
+    carbs_g: float | None
+    fiber_g: float | None
+
+
 class Pick(TypedDict):
     candidate: Candidate
     macro_distance: float | None
@@ -157,18 +166,18 @@ def _word_overlap(query_words: set[str], description: str) -> float:
     return len(query_words & description_words) / len(query_words)
 
 
-def macro_distance(logged: LoggedMacros, candidate: Candidate) -> float | None:
-    """How far a candidate's macros are from the logged ones, relative to kcal.
+def macro_distance(logged: LoggedMacros, macros: UsdaMacros) -> float | None:
+    """How far a food's macros are from the logged ones, relative to kcal.
 
     EU labels count carbs without fiber while USDA counts them with it, so the
-    closer of the two readings is used. None when the candidate lacks a macro.
+    closer of the two readings is used. None when a macro is missing.
     """
-    protein, fat, carbs = candidate["protein_g"], candidate["fat_g"], candidate["carbs_g"]
+    protein, fat, carbs = macros["protein_g"], macros["fat_g"], macros["carbs_g"]
     if protein is None or fat is None or carbs is None:
         return None
     carbs_delta = abs(logged["carbs_g"] - carbs)
-    if candidate["fiber_g"] is not None:
-        carbs_delta = min(carbs_delta, abs(logged["carbs_g"] - (carbs - candidate["fiber_g"])))
+    if macros["fiber_g"] is not None:
+        carbs_delta = min(carbs_delta, abs(logged["carbs_g"] - (carbs - macros["fiber_g"])))
     weighted = (
         4 * abs(logged["protein_g"] - protein)
         + 9 * abs(logged["fat_g"] - fat)
