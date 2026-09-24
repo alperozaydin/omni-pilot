@@ -17,6 +17,7 @@ from omni_pilot.config import (
     load_supplements,
     resolve_path,
 )
+from omni_pilot.custom_foods import CustomFoodsError, load_custom_foods
 from omni_pilot.enricher import count_outdated_matches, enrich_all_foods
 from omni_pilot.matcher import logged_macros_per_100g
 from omni_pilot.parser import extract_unique_foods, parse_food_log
@@ -31,6 +32,7 @@ DEFAULT_REF_RANGES = "config/reference_ranges.yaml"
 DEFAULT_MAPPINGS = "config/food_mappings.yaml"
 DEFAULT_SUPPLEMENTS = "config/supplements.yaml"
 DEFAULT_DB = "db/food_db.json"
+DEFAULT_CUSTOM_FOODS = "config/custom_foods.yaml"
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
@@ -47,13 +49,21 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     db_path = resolve_path("database_path", DEFAULT_DB, settings)
     mappings_path = resolve_path("mappings_path", DEFAULT_MAPPINGS, settings)
+    custom_foods_path = resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings)
 
     print(f"Database: {db_path}")
     print(f"Mappings: {mappings_path}")
+    print(f"Custom foods: {custom_foods_path}")
 
     api_key = settings.get("usda_api_key", "")
     if not api_key:
         print("Error: No USDA API key in settings.yaml.")
+        sys.exit(1)
+
+    try:
+        custom_foods = load_custom_foods(custom_foods_path)
+    except CustomFoodsError as e:
+        print(f"Error in {custom_foods_path}: {e}")
         sys.exit(1)
 
     # 1. Parse Excel Food Log
@@ -63,19 +73,22 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     food_names = extract_unique_foods(entries)
     print(f"  Found {len(food_names)} unique foods.")
 
-    # 2. Resolve & Sync Mappings (Auto-Translate with Gemini if new foods found)
-    mappings = resolve_and_sync_mappings(food_names, db_path, mappings_path, settings)
+    # 2. Resolve & Sync Mappings (Auto-Translate with Gemini if new foods found).
+    # Foods covered by a custom recipe need no translation, so Gemini never sees them.
+    translatable = [f for f in food_names if f not in custom_foods["by_food"]]
+    mappings = resolve_and_sync_mappings(translatable, db_path, mappings_path, settings)
 
     # 3. Enrich foods with USDA data
     print("Enriching foods with USDA data...")
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
-    outdated = count_outdated_matches(food_names, mappings, db)
+    outdated = count_outdated_matches(translatable, mappings, db)
     if outdated:
         print(f"  Re-matching {outdated} cached foods with updated USDA matching...")
     logged_macros = logged_macros_per_100g(entries)
-    enrichment = enrich_all_foods(food_names, mappings, logged_macros, db, api_key)
-    print(f"  {len(enrichment['profiles'])}/{len(food_names)} foods resolved.")
+    enrichment = enrich_all_foods(food_names, mappings, logged_macros, db, api_key, custom_foods=custom_foods)
+    resolved = len(enrichment["profiles"]) + len(enrichment["custom"])
+    print(f"  {resolved}/{len(food_names)} foods resolved.")
 
     # 4. Analyze Micronutrient Intake
     print("Analyzing micronutrient intake...")

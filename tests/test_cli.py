@@ -11,6 +11,14 @@ from omni_pilot.cli import main
 from omni_pilot.enricher import MATCH_VERSION
 from tests.helpers import enrichment, food_entry
 
+CAPRESE_RECIPE = "caprese:\n  foods: [Salat Caprese]\n  ingredients:\n    - {fdc_id: 170457, amount: 1}\n"
+
+
+@pytest.fixture(autouse=True)
+def _custom_foods_in_tmp(monkeypatch, tmp_path):
+    """Point the default custom_foods path into tmp_path; it's absent unless a test writes it."""
+    monkeypatch.setattr("omni_pilot.cli.DEFAULT_CUSTOM_FOODS", str(tmp_path / "custom_foods.yaml"))
+
 
 class TestCLIHelp:
     def test_help_exits_cleanly(self, mocker):
@@ -307,3 +315,59 @@ class TestCLIAnalyze:
         self._run(mocker, settings_path, ref_ranges_path)
 
         assert "Re-matching" not in capsys.readouterr().out
+
+    def test_analyze_keeps_custom_foods_out_of_translation(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        (tmp_path / "custom_foods.yaml").write_text(CAPRESE_RECIPE)
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Reis"), food_entry("Salat Caprese")])
+        mock_resolve = mocker.patch(
+            "omni_pilot.cli.resolve_and_sync_mappings", return_value={"Reis": "rice, cooked"},
+        )
+        mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert f"Custom foods: {tmp_path / 'custom_foods.yaml'}" in capsys.readouterr().out
+        assert mock_resolve.call_args.args[0] == ["Reis"]
+        assert mock_enrich.call_args.args[0] == ["Reis", "Salat Caprese"]
+        assert mock_enrich.call_args.kwargs["custom_foods"]["by_food"] == {"Salat Caprese": "caprese"}
+
+    def test_analyze_exits_on_invalid_custom_foods(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {})
+        (tmp_path / "custom_foods.yaml").write_text("caprese: {foods: [], ingredients: []}\n")
+        mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods")
+
+        with pytest.raises(SystemExit) as exc_info:
+            self._run(mocker, settings_path, ref_ranges_path)
+
+        assert exc_info.value.code == 1
+        assert f"Error in {tmp_path / 'custom_foods.yaml'}: recipe 'caprese'" in capsys.readouterr().out
+        mock_enrich.assert_not_called()
+
+    def test_custom_food_with_stale_cache_entry_is_not_rematched(self, mocker, tmp_path, capsys):
+        db_path, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Salat Caprese": "caprese salad"})
+        (tmp_path / "custom_foods.yaml").write_text(CAPRESE_RECIPE)
+        db = TinyDB(db_path)
+        # Left over from before the recipe existed: same query, no match_version
+        db.insert({"original_name": "Salat Caprese", "usda_query": "caprese salad", "per_100g": {}})
+        db.close()
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Salat Caprese")])
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert "Re-matching" not in capsys.readouterr().out
+
+    def test_analyze_counts_custom_foods_as_resolved(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        (tmp_path / "custom_foods.yaml").write_text(CAPRESE_RECIPE)
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Reis"), food_entry("Salat Caprese")])
+        caprese = {"recipe": "caprese", "parts": [], "macro_distance": None}
+        mocker.patch(
+            "omni_pilot.cli.enrich_all_foods",
+            return_value=enrichment({"Reis": {}}, custom={"Salat Caprese": caprese}),
+        )
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert "2/2 foods resolved." in capsys.readouterr().out

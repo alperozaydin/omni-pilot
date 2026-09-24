@@ -41,4 +41,5 @@ sync-iphone:
 		--exclude='config/settings.yaml' \
 		--exclude='config/food_mappings.yaml' \
 		--exclude='config/supplements.yaml' \
+		--exclude='config/custom_foods.yaml' \
 		./ "$(ICLOUD_DEST)/"
