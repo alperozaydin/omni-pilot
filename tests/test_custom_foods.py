@@ -58,6 +58,18 @@ class TestLoadCustomFoods:
         custom = load_custom_foods(EXAMPLE_PATH)
         assert set(custom["recipes"]) == {"green_salad", "caprese"}
 
+    def test_food_names_are_stripped(self, tmp_path):
+        path = _write(tmp_path, f'caprese: {{foods: ["Salat Caprese "], ingredients: {ONE}}}\n')
+
+        custom = load_custom_foods(path)
+
+        assert custom["recipes"]["caprese"]["foods"] == ["Salat Caprese"]
+        assert custom["by_food"] == {"Salat Caprese": "caprese"}
+
+    def test_cannot_be_read_raises_custom_foods_error(self, tmp_path):
+        with pytest.raises(CustomFoodsError, match="cannot be read"):
+            load_custom_foods(str(tmp_path))
+
     @pytest.mark.parametrize(("text", "message"), [
         ("caprese: {foods: [A", "not valid YAML"),
         ("- a\n- b\n", "the top level must map recipe names to recipes"),
@@ -67,6 +79,10 @@ class TestLoadCustomFoods:
         (f"caprese: {{foods: [], ingredients: {ONE}}}\n", "'foods' must be a non-empty list of food names"),
         (f"caprese: {{foods: ['  '], ingredients: {ONE}}}\n", "every entry in 'foods' must be a non-empty food name"),
         (f"caprese: {{foods: [42], ingredients: {ONE}}}\n", "every entry in 'foods' must be a non-empty food name"),
+        (
+            f"caprese: {{foods: [Yes], ingredients: {ONE}}}\n",
+            "every entry in 'foods' must be a non-empty food name, got True",
+        ),
         ("caprese: {foods: [A], ingredients: []}\n", "recipe 'caprese': 'ingredients' must be a non-empty list"),
         ("caprese: {foods: [A], ingredients: [{fdc_id: 1}]}\n",
          "ingredient 1 must have exactly 'fdc_id' and 'amount'"),
@@ -89,6 +105,15 @@ class TestLoadCustomFoods:
         (f"a: {{foods: [X], ingredients: {ONE}}}\nb: {{foods: [X], ingredients: {ONE}}}\n",
          "recipe 'b': food 'X' is already listed in recipe 'a'"),
         (f"a: {{foods: [X, X], ingredients: {ONE}}}\n", "recipe 'a': food 'X' is already listed in recipe 'a'"),
+        (
+            "green_salad: {foods: [A], ingredients: " + ONE + "}\n"
+            "green_salad: {foods: [B], ingredients: " + ONE + "}\n",
+            "repeated key 'green_salad' on line 2",
+        ),
+        (
+            "caprese:\n  foods: [A]\n  ingredients:\n    - {fdc_id: 1, fdc_id: 2, amount: 3}\n",
+            "repeated key 'fdc_id' on line 4",
+        ),
     ])
     def test_rejects_invalid_file(self, tmp_path, text, message):
         path = _write(tmp_path, text)

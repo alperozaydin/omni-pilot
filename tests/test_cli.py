@@ -332,6 +332,25 @@ class TestCLIAnalyze:
         assert mock_enrich.call_args.args[0] == ["Reis", "Salat Caprese"]
         assert mock_enrich.call_args.kwargs["custom_foods"]["by_food"] == {"Salat Caprese": "caprese"}
 
+    def test_analyze_reports_custom_foods_not_found(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Reis")])
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert f"Custom foods: {tmp_path / 'custom_foods.yaml'} (not found — none used)" in capsys.readouterr().out
+
+    def test_analyze_reports_custom_foods_counts(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        (tmp_path / "custom_foods.yaml").write_text(CAPRESE_RECIPE)
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Reis"), food_entry("Salat Caprese")])
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert f"Custom foods: {tmp_path / 'custom_foods.yaml'} (1 recipes, 1 foods)" in capsys.readouterr().out
+
     def test_analyze_exits_on_invalid_custom_foods(self, mocker, tmp_path, capsys):
         _, settings_path, ref_ranges_path = self._write_config(tmp_path, {})
         (tmp_path / "custom_foods.yaml").write_text("caprese: {foods: [], ingredients: []}\n")

@@ -22,6 +22,35 @@ class CustomFoodsError(ValueError):
     """custom_foods.yaml is malformed. The message names the recipe and the problem."""
 
 
+class _DuplicateKeyError(yaml.YAMLError):
+    """A mapping in custom_foods.yaml repeats a key; raised while constructing the mapping."""
+
+
+class _StrictKeyLoader(yaml.SafeLoader):
+    """A SafeLoader that rejects mappings with a repeated key instead of keeping the last one.
+
+    Without this, two `green_salad:` blocks (or a repeated `fdc_id:` within one
+    ingredient) silently collapse to a single value and the earlier one is lost.
+    """
+
+
+def _construct_mapping_no_duplicates(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict:
+    seen: set[object] = set()
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if key in seen:
+            raise _DuplicateKeyError(f"repeated key {key!r} on line {key_node.start_mark.line + 1}")
+        seen.add(key)
+        mapping[key] = loader.construct_object(value_node, deep=True)
+    return mapping
+
+
+_StrictKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_no_duplicates
+)
+
+
 class Ingredient(TypedDict):
     fdc_id: int
     share: float  # amount / sum of the recipe's amounts; a recipe's shares sum to 1
@@ -53,7 +82,9 @@ def load_custom_foods(path: str) -> CustomFoods:
         return no_custom_foods()
     try:
         with open(path) as f:
-            data = yaml.safe_load(f)
+            data = yaml.load(f, Loader=_StrictKeyLoader)
+    except OSError as e:
+        raise CustomFoodsError(f"cannot be read: {e}") from e
     except yaml.YAMLError as e:
         raise CustomFoodsError(f"not valid YAML: {e}") from e
     if data is None:
@@ -88,8 +119,12 @@ def _parse_recipe(name: str, body: object) -> Recipe:
     foods = body.get("foods")
     if not isinstance(foods, list) or not foods:
         raise fail("'foods' must be a non-empty list of food names")
-    if not all(isinstance(food, str) and food.strip() for food in foods):
-        raise fail("every entry in 'foods' must be a non-empty food name")
+    for food in foods:
+        if not isinstance(food, str) or not food.strip():
+            raise fail(
+                "every entry in 'foods' must be a non-empty food name, "
+                f'got {food!r} (quote names like "Yes" or "2024")'
+            )
 
     ingredients = body.get("ingredients")
     if not isinstance(ingredients, list) or not ingredients:
@@ -114,7 +149,7 @@ def _parse_recipe(name: str, body: object) -> Recipe:
     total = sum(amount for _, amount in amounts)
     return Recipe(
         name=name,
-        foods=list(foods),
+        foods=[food.strip() for food in foods],
         ingredients=[Ingredient(fdc_id=fdc_id, share=amount / total) for fdc_id, amount in amounts],
     )
 

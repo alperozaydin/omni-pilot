@@ -323,7 +323,7 @@ def get_usda_food(fdc_id: int, db: TinyDB, api_key: str) -> UsdaFood | None:
         per_100g=extract_micros_from_usda(raw),
         usda_macros=_usda_macros(raw),
     )
-    table.insert({**food, "last_updated": str(date.today())})
+    table.upsert({**food, "last_updated": str(date.today())}, Query().fdc_id == fdc_id)
     return food
 
 

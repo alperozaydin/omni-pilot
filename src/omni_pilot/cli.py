@@ -53,7 +53,6 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     print(f"Database: {db_path}")
     print(f"Mappings: {mappings_path}")
-    print(f"Custom foods: {custom_foods_path}")
 
     api_key = settings.get("usda_api_key", "")
     if not api_key:
@@ -65,6 +64,13 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     except CustomFoodsError as e:
         print(f"Error in {custom_foods_path}: {e}")
         sys.exit(1)
+
+    if os.path.exists(custom_foods_path):
+        n_recipes = len(custom_foods["recipes"])
+        n_foods = len(custom_foods["by_food"])
+        print(f"Custom foods: {custom_foods_path} ({n_recipes} recipes, {n_foods} foods)")
+    else:
+        print(f"Custom foods: {custom_foods_path} (not found — none used)")
 
     # 1. Parse Excel Food Log
     print(f"Parsing {xlsx_path}...")
