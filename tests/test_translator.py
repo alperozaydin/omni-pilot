@@ -35,12 +35,53 @@ def test_translate_new_foods_success(mocker):
 def test_translate_new_foods_retry_limit(mocker):
     """Test that transient failures retry at most once (2 total attempts)."""
     mock_post = mocker.patch("requests.post", side_effect=requests.RequestException("Network Error"))
+    mocker.patch("time.sleep")
 
     with pytest.raises(requests.RequestException):
         translate_new_foods(["Milch"], api_key="fake_key")
 
     # 1 initial attempt + 1 retry = 2 total attempts
     assert mock_post.call_count == 2
+
+
+@pytest.mark.parametrize("error", [requests.ConnectionError("unreachable"), requests.ConnectTimeout("timed out")])
+def test_translate_new_foods_does_not_retry_when_gemini_is_unreachable(mocker, error):
+    """A server that can't be reached now won't be in two seconds: fail at once instead of waiting twice."""
+    mock_post = mocker.patch("requests.post", side_effect=error)
+    mocker.patch("time.sleep")
+
+    with pytest.raises(type(error)):
+        translate_new_foods(["Milch"], api_key="fake_key")
+
+    assert mock_post.call_count == 1
+
+
+def _gemini_reply(mocker, translations: list[str]):
+    reply = mocker.MagicMock(status_code=200)
+    reply.json.return_value = {"candidates": [{"content": {"parts": [{"text": json.dumps(translations)}]}}]}
+    return reply
+
+
+def test_translate_new_foods_sends_api_key_in_a_header_never_the_url(mocker):
+    """requests puts the URL into its error messages, which get logged: a key in the URL would be printed."""
+    mock_post = mocker.patch("requests.post", return_value=_gemini_reply(mocker, ["milk"]))
+
+    translate_new_foods(["Milch"], api_key="fake_key")
+
+    assert "fake_key" not in mock_post.call_args.args[0]
+    assert mock_post.call_args.kwargs["headers"] == {"x-goog-api-key": "fake_key"}
+
+
+def test_translate_new_foods_gives_up_connecting_quickly(mocker):
+    """The connect timeout applies to each of Gemini's (many) addresses in turn, so it must be short."""
+    mock_post = mocker.patch("requests.post", return_value=_gemini_reply(mocker, ["milk"]))
+
+    translate_new_foods(["Milch"], api_key="fake_key")
+
+    connect_timeout, read_timeout = mock_post.call_args.kwargs["timeout"]
+    assert connect_timeout <= 5
+    # Gemini takes ~15s to answer for a dozen foods; leave it room to think.
+    assert read_timeout >= 60
 
 
 def test_resolve_and_sync_mappings_gemini_success(mocker, tmp_path):

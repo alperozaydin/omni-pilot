@@ -6,13 +6,25 @@ import logging
 import os
 
 import requests
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 from tinydb import Query, TinyDB
 
 from omni_pilot.config import load_food_mappings
 from omni_pilot.parser import generate_food_mappings
 
 logger = logging.getLogger(__name__)
+
+# (connect, read) seconds. The connect timeout applies to each address the host
+# resolves to, tried in turn, and Gemini's host resolves to 16 of them: at 30s
+# each, an unreachable network kept the CLI waiting for minutes. The read
+# timeout leaves room for the model to think (~15s for a dozen foods).
+GEMINI_TIMEOUT = (5, 60)
 
 GEMINI_PROMPT_TEMPLATE = """
 You are an expert nutritionist translating food log entries (mostly German or branded) into optimal USDA FoodData Central (SR Legacy and Foundation datasets) search queries.
@@ -59,13 +71,19 @@ Input foods:
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=1, min=2, max=5),
-    retry=retry_if_exception_type((requests.RequestException, json.JSONDecodeError, KeyError, IndexError)),
+    # A server that can't be reached now won't be two seconds later either.
+    retry=(
+        retry_if_exception_type((requests.RequestException, json.JSONDecodeError, KeyError, IndexError))
+        & retry_if_not_exception_type(requests.ConnectionError)
+    ),
     reraise=True,
 )
 def translate_new_foods(foods_list: list[str], api_key: str, model: str = "gemini-flash-latest") -> list[str]:
     """Translate and clean food log queries for USDA FoodData Central search using Gemini REST API."""
     prompt = GEMINI_PROMPT_TEMPLATE.format(foods_json=json.dumps(foods_list))
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    # The key goes in a header, not the URL: requests includes the URL in its
+    # error messages, which are logged.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -77,7 +95,7 @@ def translate_new_foods(foods_list: list[str], api_key: str, model: str = "gemin
             }
         }
     }
-    resp = requests.post(url, json=payload, timeout=30)
+    resp = requests.post(url, json=payload, headers={"x-goog-api-key": api_key}, timeout=GEMINI_TIMEOUT)
     resp.raise_for_status()
     data = resp.json()
     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]

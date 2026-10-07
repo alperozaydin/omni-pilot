@@ -126,6 +126,14 @@ USDA_NUTRIENT_MAP: dict[str, str] = {
 # Reverse map: USDA number -> our key
 _USDA_NUMBER_TO_KEY = {v: k for k, v in USDA_NUTRIENT_MAP.items()}
 
+# (connect, read) seconds. The connect timeout applies to each address the host
+# resolves to, tried in turn, so it is kept short: an unreachable network then
+# fails in seconds instead of minutes.
+USDA_TIMEOUT = (5, 30)
+# One session for every USDA request, so a run reuses one connection instead of
+# opening (and TLS-handshaking) a new one per request.
+_SESSION = requests.Session()
+
 USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 USDA_FOOD_URL = "https://api.nal.usda.gov/fdc/v1/food/{fdc_id}"
 # Ingredients of custom foods, keyed by FDC ID. An ID always names the same
@@ -138,13 +146,18 @@ def clean_query(query: str) -> str:
     return " ".join(_UNSAFE_QUERY_CHARS.sub(" ", query).split())
 
 
-def _usda_get(url: str, params: dict) -> requests.Response:
-    """GET from the USDA API, waiting and retrying once on a rate limit (429)."""
-    resp = requests.get(url, params=params, timeout=30)
+def _usda_get(url: str, params: dict, api_key: str) -> requests.Response:
+    """GET from the USDA API, waiting and retrying once on a rate limit (429).
+
+    The key goes in a header, not the query string: requests includes the URL
+    in its error messages, which are logged.
+    """
+    headers = {"X-Api-Key": api_key}
+    resp = _SESSION.get(url, params=params, headers=headers, timeout=USDA_TIMEOUT)
     if resp.status_code == 429:
         logger.warning("USDA API rate limit hit, waiting 5 seconds...")
         time.sleep(5)
-        resp = requests.get(url, params=params, timeout=30)
+        resp = _SESSION.get(url, params=params, headers=headers, timeout=USDA_TIMEOUT)
     return resp
 
 
@@ -162,14 +175,13 @@ def search_usda(query: str, api_key: str) -> list[dict] | None:
         return []
 
     params = {
-        "api_key": api_key,
         "query": cleaned,
         "dataType": "SR Legacy,Foundation",
         "pageSize": SEARCH_PAGE_SIZE,
     }
 
     try:
-        resp = _usda_get(USDA_SEARCH_URL, params)
+        resp = _usda_get(USDA_SEARCH_URL, params, api_key)
         resp.raise_for_status()
     except requests.RequestException as e:
         logger.error("USDA API request failed for '%s': %s", cleaned, e)
@@ -273,9 +285,9 @@ def fetch_usda_food(fdc_id: int, api_key: str) -> dict | None:
     search-hit helpers read the result unchanged. Returns None on any
     failure; a 404 means the ID itself is wrong.
     """
-    params = {"api_key": api_key, "format": "abridged"}
+    params = {"format": "abridged"}
     try:
-        resp = _usda_get(USDA_FOOD_URL.format(fdc_id=fdc_id), params)
+        resp = _usda_get(USDA_FOOD_URL.format(fdc_id=fdc_id), params, api_key)
         if resp.status_code == 404:
             logger.error("USDA has no food with FDC ID %s — check custom_foods.yaml", fdc_id)
             return None

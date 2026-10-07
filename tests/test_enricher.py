@@ -76,14 +76,15 @@ ABRIDGED_TOMATO = {
 
 class TestFetchUsdaFood:
     def test_requests_the_abridged_food_and_returns_it_in_search_shape(self, mocker):
-        mock_get = mocker.patch("omni_pilot.enricher.requests.get")
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
         mock_get.return_value.status_code = 200
         mock_get.return_value.json.return_value = ABRIDGED_TOMATO
 
         food = fetch_usda_food(170457, "fake-key")
 
         assert mock_get.call_args.args[0] == "https://api.nal.usda.gov/fdc/v1/food/170457"
-        assert mock_get.call_args.kwargs["params"] == {"api_key": "fake-key", "format": "abridged"}
+        assert mock_get.call_args.kwargs["params"] == {"format": "abridged"}
+        assert mock_get.call_args.kwargs["headers"] == {"X-Api-Key": "fake-key"}
         assert food["fdcId"] == 170457
         assert food["description"] == "Tomatoes, red, ripe, raw, year round average"
         assert food["dataType"] == "SR Legacy"
@@ -93,25 +94,25 @@ class TestFetchUsdaFood:
         assert micros["b12_cobalamin_mcg"] is None
 
     def test_unknown_id_returns_none(self, mocker):
-        mock_get = mocker.patch("omni_pilot.enricher.requests.get")
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
         mock_get.return_value.status_code = 404
         assert fetch_usda_food(999999999, "fake-key") is None
 
     def test_server_error_returns_none(self, mocker):
-        mock_get = mocker.patch("omni_pilot.enricher.requests.get")
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
         mock_get.return_value.status_code = 500
         mock_get.return_value.raise_for_status.side_effect = requests.HTTPError("500")
         assert fetch_usda_food(170457, "fake-key") is None
 
     def test_request_failure_returns_none(self, mocker):
-        mocker.patch("omni_pilot.enricher.requests.get", side_effect=requests.ConnectionError("offline"))
+        mocker.patch("omni_pilot.enricher._SESSION.get", side_effect=requests.ConnectionError("offline"))
         assert fetch_usda_food(170457, "fake-key") is None
 
     def test_rate_limit_is_retried_once(self, mocker):
         limited = mocker.Mock(status_code=429)
         ok = mocker.Mock(status_code=200)
         ok.json.return_value = ABRIDGED_TOMATO
-        mock_get = mocker.patch("omni_pilot.enricher.requests.get", side_effect=[limited, ok])
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get", side_effect=[limited, ok])
         mocker.patch("omni_pilot.enricher.time.sleep")
 
         assert fetch_usda_food(170457, "fake-key")["fdcId"] == 170457
@@ -161,7 +162,7 @@ class TestGetUsdaFood:
 
 class TestSearchUsda:
     def test_cleans_query_and_requests_a_full_page(self, mocker):
-        mock_get = mocker.patch("omni_pilot.enricher.requests.get")
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
         mock_get.return_value.status_code = 200
         mock_get.return_value.json.return_value = {"foods": [{"fdcId": 1}]}
 
@@ -176,12 +177,38 @@ class TestSearchUsda:
         # None is distinguishable from "no results" ([]): a failed search-2
         # must not be treated as "the food has no more candidates".
         mocker.patch(
-            "omni_pilot.enricher.requests.get", side_effect=requests.ConnectionError("offline")
+            "omni_pilot.enricher._SESSION.get", side_effect=requests.ConnectionError("offline")
         )
         assert search_usda("honey", "fake-key") is None
 
+    def test_api_key_is_sent_in_a_header_never_the_url(self, mocker):
+        # requests puts the URL, query string included, into its error
+        # messages, which get logged: a key in the params would be printed.
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {"foods": []}
+
+        search_usda("honey", "fake-key")
+
+        assert "api_key" not in mock_get.call_args.kwargs["params"]
+        assert mock_get.call_args.kwargs["headers"] == {"X-Api-Key": "fake-key"}
+
+    def test_gives_up_connecting_quickly(self, mocker):
+        # The connect timeout applies to each address the host resolves to,
+        # tried one after another, so it must be short for an unreachable
+        # network to fail in seconds rather than minutes.
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {"foods": []}
+
+        search_usda("honey", "fake-key")
+
+        connect_timeout, read_timeout = mock_get.call_args.kwargs["timeout"]
+        assert connect_timeout <= 5
+        assert read_timeout >= 30
+
     def test_query_empty_after_cleaning_makes_no_request(self, mocker):
-        mock_get = mocker.patch("omni_pilot.enricher.requests.get")
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
         assert search_usda("( / )", "fake-key") == []
         mock_get.assert_not_called()
 

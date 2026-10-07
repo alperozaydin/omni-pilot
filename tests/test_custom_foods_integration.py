@@ -47,7 +47,7 @@ class FakeUsda:
         self.searches: list[str] = []
         self.fetched_ids: list[int] = []
 
-    def __call__(self, url, params=None, timeout=None):
+    def __call__(self, url, params=None, headers=None, timeout=None):
         response = Mock(status_code=200)
         if url == USDA_SEARCH_URL:
             self.searches.append(params["query"])
@@ -109,7 +109,7 @@ def workspace(tmp_path, monkeypatch, mocker):
     monkeypatch.setenv("COLUMNS", "300")  # keep Rich from wrapping the Custom foods line
 
     usda = FakeUsda()
-    mocker.patch("omni_pilot.enricher.requests.get", side_effect=usda)
+    mocker.patch("omni_pilot.enricher._SESSION.get", side_effect=usda)
     mocker.patch("omni_pilot.enricher.time.sleep")
     mocker.patch(
         "omni_pilot.translator.requests.post",
