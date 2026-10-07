@@ -27,6 +27,13 @@ class TestCLIHelp:
             main()
         assert exc_info.value.code == 0
 
+    def test_connections_prefer_ipv4(self, mocker):
+        install = mocker.patch("omni_pilot.cli.prefer_ipv4_connections")
+        mocker.patch("sys.argv", ["omni_pilot", "--help"])
+        with pytest.raises(SystemExit):
+            main()
+        install.assert_called_once_with()
+
 
 class TestCLIAnalyze:
     def test_analyze_missing_usda_key_exits(self, mocker, tmp_path):

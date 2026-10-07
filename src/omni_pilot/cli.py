@@ -20,6 +20,7 @@ from omni_pilot.config import (
 from omni_pilot.custom_foods import CustomFoodsError, load_custom_foods
 from omni_pilot.enricher import count_outdated_matches, enrich_all_foods
 from omni_pilot.matcher import logged_macros_per_100g
+from omni_pilot.net import prefer_ipv4_connections
 from omni_pilot.parser import extract_unique_foods, parse_food_log
 from omni_pilot.reporter import generate_html_report, print_terminal_report
 from omni_pilot.translator import resolve_and_sync_mappings
@@ -121,6 +122,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main CLI entry point."""
+    prefer_ipv4_connections()
     logging.basicConfig(
         level=logging.INFO,
         format="%(levelname)s: %(message)s",
