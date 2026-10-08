@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "omni-pilot-custom-foods": {
+      "source": "alperozaydin/my-skills",
+      "sourceType": "github",
+      "skillPath": "skills/omni-pilot-custom-foods/SKILL.md",
+      "computedHash": "36b34b42966ce50363f2e78a6cbe8f1c31d74d21da362835f9ca6a618bcaad76"
+    },
     "pytest": {
       "source": "alperozaydin/my-skills",
       "sourceType": "github",
