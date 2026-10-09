@@ -291,7 +291,7 @@ class TestMissingFoodWarnings:
         print_terminal_report(_make_analysis_result(), self.SETTINGS)
         out = capsys.readouterr().out
         assert "207/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed)" in out
-        assert "⚠ Not in USDA: Unknown Thing — fix their mapping in food_mappings.yaml" in out
+        assert "⚠ Not in USDA: Unknown Thing — give them a custom recipe in custom_foods.yaml" in out
         assert "⚠ Lookup failed: Himbeeren — retried next run" in out
         assert "Unresolved" not in out
 
@@ -321,7 +321,7 @@ class TestMissingFoodWarnings:
         with open(html_path) as f:
             html = f.read()
         assert "207/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed)" in html
-        assert "⚠ Not in USDA: Unknown Thing — fix their mapping in food_mappings.yaml" in html
+        assert "⚠ Not in USDA: Unknown Thing — give them a custom recipe in custom_foods.yaml" in html
         assert "⚠ Lookup failed: Himbeeren — retried next run" in html
         assert "Unresolved" not in html
 

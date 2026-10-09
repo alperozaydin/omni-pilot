@@ -55,7 +55,7 @@ class EnrichmentResult(TypedDict):
 
     profiles: dict[str, dict[str, float | None]]
     skipped: set[str]
-    # The USDA search ran and found nothing: the mapping needs fixing.
+    # The USDA search ran and found nothing: the food needs a custom recipe.
     not_in_usda: set[str]
     # USDA could not be asked, or a recipe ingredient could not be fetched:
     # retried next run.

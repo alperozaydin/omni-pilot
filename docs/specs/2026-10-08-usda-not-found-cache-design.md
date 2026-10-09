@@ -1,6 +1,6 @@
 # Technical Specification: Cache USDA "Not Found" Results (BAR-79)
 
-**Document Version:** 1.0
+**Document Version:** 1.1 (review fix: not-in-USDA advice points to a custom recipe, because a `food_mappings.yaml` edit is overridden by the DB translation and reverted)
 **Date:** 2026-10-08
 **Status:** In Review
 **Linear Issue:** [BAR-79](https://linear.app/knaak/issue/BAR-79/when-the-item-is-skipped-because-not-found-in-usda-query-it-will-be)
@@ -28,7 +28,7 @@ Gemini is not affected: a translation is cached once it is returned, and only fo
 - Keep the two outcomes apart from the search up to the report.
 - Cache **not in USDA** as a record in the main USDA cache table, reused for 30 days, so later runs make no USDA call for that food.
 - Never cache a **lookup failed**; the food is retried next run, as today.
-- Split the report's "Unresolved" line into **Not in USDA** (fix the mapping) and **Lookup failed** (retried next run).
+- Split the report's "Unresolved" line into **Not in USDA** (give it a custom recipe) and **Lookup failed** (retried next run).
 - Show not-found foods as their own group in the custom-foods skill's `review` command.
 
 ### Decisions Made During Design
@@ -38,7 +38,7 @@ Gemini is not affected: a translation is cached once it is returned, and only fo
 | What gets cached | Only an HTTP 200 search with no hits | A failed request says nothing about the food; caching it would hide foods that resolve on the next run (the 2026-10-07 case). |
 | Where the record lives | Main USDA cache table, same `original_name` key as matches | Keeps one record per food; `upsert`, the mapping-change removal and `match_version` all work on it unchanged. A separate table was considered for safety with older code and rejected (§7). |
 | Expiry | 30 days, then searched again | Covers USDA adding a food later at one search per missing food per month. |
-| Report | Two lines instead of "Unresolved" | A not-found food needs a mapping fix; a failed lookup fixes itself. One label hid that. |
+| Report | Two lines instead of "Unresolved" | A not-found food needs a custom recipe (a `food_mappings.yaml` edit is overridden by the DB translation); a failed lookup fixes itself. One label hid that. |
 | Recipe ingredient failures | Reported as **lookup failed** | Same as today's `unresolved`; a wrong FDC ID (404) is already named in the log. |
 
 ---
@@ -159,7 +159,7 @@ Summary line, terminal and HTML:
 Warnings, terminal (red) and HTML:
 
 ```
-⚠ Not in USDA: Braun Linsen — fix their mapping in food_mappings.yaml
+⚠ Not in USDA: Braun Linsen — give them a custom recipe in custom_foods.yaml
 ⚠ Lookup failed: Himbeeren — retried next run
 ```
 
@@ -185,7 +185,7 @@ The skill's `scripts/recipe_tool.py` reads every main-table entry with `db.all()
 
 - **Change:** in `review`, records with `not_found` go to their own group, printed after "Searched in USDA":
   ```
-  == Not in USDA (n): fix their mapping
+  == Not in USDA (n): give them a recipe
   Braun Linsen  (420 g; logged ...)
       looked up as: lentils, mature seeds, raw
   ```

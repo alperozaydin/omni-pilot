@@ -210,7 +210,7 @@ def print_terminal_report(result: dict, settings: dict) -> None:
     if coverage["not_in_usda_foods"]:
         foods_str = ", ".join(coverage["not_in_usda_foods"])
         console.print(Text(
-            f"  ⚠ Not in USDA: {foods_str} — fix their mapping in food_mappings.yaml", style="red",
+            f"  ⚠ Not in USDA: {foods_str} — give them a custom recipe in custom_foods.yaml", style="red",
         ))
     if coverage["lookup_failed_foods"]:
         foods_str = ", ".join(coverage["lookup_failed_foods"])
@@ -319,7 +319,7 @@ HTML_TEMPLATE = """\
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
         {% if not_in_usda_foods %}
-        <p>⚠ Not in USDA: {{ not_in_usda_foods|join(", ") }} — fix their mapping in food_mappings.yaml</p>
+        <p>⚠ Not in USDA: {{ not_in_usda_foods|join(", ") }} — give them a custom recipe in custom_foods.yaml</p>
         {% endif %}
         {% if lookup_failed_foods %}
         <p>⚠ Lookup failed: {{ lookup_failed_foods|join(", ") }} — retried next run</p>
