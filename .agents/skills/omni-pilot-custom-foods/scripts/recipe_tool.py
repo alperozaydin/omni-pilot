@@ -190,7 +190,7 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(f"    looked up as: {e.get('usda_query')}")
         print(f"    matched to  : {e.get('usda_name')}  [{e.get('confidence', '?')}{off}]")
     if groups["not in usda"]:
-        print(f"\n== Not in USDA ({len(groups['not in usda'])}): fix their mapping")
+        print(f"\n== Not in USDA ({len(groups['not in usda'])}): give them a recipe")
         for name in groups["not in usda"]:
             print(header(name))
             print(f"    looked up as: {matches[name].get('usda_query')}")
