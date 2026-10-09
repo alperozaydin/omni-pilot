@@ -53,6 +53,8 @@ read every entry, and list for the user, heaviest first:
   the weight; the user fixes it in MacroFactor.
 - **Skipped foods that are real food** (e.g. a vegan meat substitute): a recipe
   makes them count.
+- **Not in USDA** (its own group in `review`): USDA found nothing for the
+  mapped query; fix the mapping in `food_mappings.yaml`, or give it a recipe.
 - **Custom foods marked ⚠** in `check`.
 
 Foods with "not in any export" were logged in older exports only; mention
