@@ -48,13 +48,18 @@ class CustomFoodMatch(TypedDict):
 class EnrichmentResult(TypedDict):
     """Outcome of enriching a set of foods.
 
-    "Deliberately skipped" and "USDA lookup failed" are different facts and are
-    kept in separate sets, so profiles never carries None for either.
+    "Deliberately skipped", "USDA has no such food" and "USDA could not be
+    asked" are different facts and are kept in separate sets, so profiles
+    never carries None for any of them.
     """
 
     profiles: dict[str, dict[str, float | None]]
     skipped: set[str]
-    unresolved: set[str]
+    # The USDA search ran and found nothing: the mapping needs fixing.
+    not_in_usda: set[str]
+    # USDA could not be asked, or a recipe ingredient could not be fetched:
+    # retried next run.
+    lookup_failed: set[str]
     # Resolved foods whose USDA match fits the logged macros poorly. They stay
     # in profiles and are counted; the report names them.
     low_confidence: dict[str, LowConfidenceMatch]
@@ -536,14 +541,16 @@ def enrich_all_foods(
 
     A food covered by a custom recipe is built from the recipe's ingredients
     and goes into custom, whatever its mapping says (even "skip"). Otherwise:
-    resolved foods go into profiles, foods mapped to "skip" into skipped, and
-    foods whose USDA lookup failed into unresolved. Resolved foods whose match
-    is weak are also listed in low_confidence.
+    resolved foods go into profiles, foods mapped to "skip" into skipped,
+    foods USDA has no match for into not_in_usda, and foods whose lookup
+    failed into lookup_failed. Resolved foods whose match is weak are also
+    listed in low_confidence.
     """
     if custom_foods is None:
         custom_foods = no_custom_foods()
     result: EnrichmentResult = {
-        "profiles": {}, "skipped": set(), "unresolved": set(), "low_confidence": {}, "custom": {},
+        "profiles": {}, "skipped": set(), "not_in_usda": set(), "lookup_failed": set(),
+        "low_confidence": {}, "custom": {},
     }
     fetched: dict[int, UsdaFood | None] = {}
 
@@ -552,7 +559,7 @@ def enrich_all_foods(
         if recipe_name is not None:
             ingredients = _recipe_ingredients(custom_foods["recipes"][recipe_name], db, api_key, fetched)
             if ingredients is None:
-                result["unresolved"].add(food_name)
+                result["lookup_failed"].add(food_name)
                 logger.warning(
                     "Could not resolve '%s': an ingredient of recipe '%s' is unavailable",
                     food_name, recipe_name,
@@ -574,12 +581,13 @@ def enrich_all_foods(
         query = mapping if mapping else food_name
         match = get_food_match(food_name, query, logged_macros.get(food_name), db, api_key)
 
-        if isinstance(match, str):
-            result["unresolved"].add(food_name)
-            logger.warning(
-                "Could not resolve '%s' (query: '%s') — marking as unresolved",
-                food_name, query,
-            )
+        if match == "not_in_usda":
+            result["not_in_usda"].add(food_name)
+            logger.warning("USDA has no match for '%s' (query: '%s')", food_name, query)
+            continue
+        if match == "lookup_failed":
+            result["lookup_failed"].add(food_name)
+            logger.warning("Could not look up '%s' (query: '%s') — retried next run", food_name, query)
             continue
 
         result["profiles"][food_name] = match["per_100g"]

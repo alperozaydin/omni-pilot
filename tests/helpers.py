@@ -10,7 +10,8 @@ def enrichment(
     profiles: dict[str, dict[str, float | None]] | None = None,
     *,
     skipped: Iterable[str] = (),
-    unresolved: Iterable[str] = (),
+    not_in_usda: Iterable[str] = (),
+    lookup_failed: Iterable[str] = (),
     low_confidence: dict[str, LowConfidenceMatch] | None = None,
     custom: dict[str, CustomFoodMatch] | None = None,
 ) -> EnrichmentResult:
@@ -18,7 +19,8 @@ def enrichment(
     return {
         "profiles": dict(profiles or {}),
         "skipped": set(skipped),
-        "unresolved": set(unresolved),
+        "not_in_usda": set(not_in_usda),
+        "lookup_failed": set(lookup_failed),
         "low_confidence": dict(low_confidence or {}),
         "custom": dict(custom or {}),
     }

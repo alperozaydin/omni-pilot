@@ -635,13 +635,14 @@ class TestEnrichAllFoods:
         result = enrich_all_foods(["Quick Add", "Boiled Eggs"], mappings, {}, db, "fake-key")
 
         assert result["skipped"] == {"Quick Add"}
-        assert result["unresolved"] == set()
+        assert result["not_in_usda"] == set()
+        assert result["lookup_failed"] == set()
         assert "Quick Add" not in result["profiles"]
         assert result["profiles"]["Boiled Eggs"] == {"vitamin_a_mcg": 149.0}
         # get_food_match should only be called for Boiled Eggs
         mock_match.assert_called_once()
 
-    def test_failed_usda_lookup_is_unresolved_not_skipped(self, mocker, tmp_path):
+    def test_food_usda_does_not_have_is_not_in_usda(self, mocker, tmp_path):
         # Only the network seam is faked, so the real get_food_match and
         # enrich_all_foods produce the shape the pipeline actually sees.
         db = TinyDB(str(tmp_path / "test_db.json"))
@@ -649,9 +650,34 @@ class TestEnrichAllFoods:
 
         result = enrich_all_foods(["Lachs"], {"Lachs": "salmon"}, {}, db, "fake-key")
 
-        assert result["unresolved"] == {"Lachs"}
+        assert result["not_in_usda"] == {"Lachs"}
+        assert result["lookup_failed"] == set()
         assert result["skipped"] == set()
         assert "Lachs" not in result["profiles"]
+
+    def test_failed_usda_request_is_lookup_failed(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.search_usda", return_value=None)
+
+        result = enrich_all_foods(["Lachs"], {"Lachs": "salmon"}, {}, db, "fake-key")
+
+        assert result["lookup_failed"] == {"Lachs"}
+        assert result["not_in_usda"] == set()
+        assert result["skipped"] == set()
+
+    def test_skip_wins_over_a_not_found_record(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert({
+            "original_name": "Lachs", "usda_query": "salmon", "not_found": True,
+            "match_version": MATCH_VERSION, "last_updated": "2026-10-01",
+        })
+        mock_search = mocker.patch("omni_pilot.enricher.search_usda")
+
+        result = enrich_all_foods(["Lachs"], {"Lachs": "skip"}, {}, db, "fake-key")
+
+        assert result["skipped"] == {"Lachs"}
+        assert result["not_in_usda"] == set()
+        mock_search.assert_not_called()
 
     def test_profiles_never_contain_none(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
@@ -759,7 +785,7 @@ class TestEnrichCustomFoods:
         assert result["skipped"] == set()
         mock_match.assert_not_called()
 
-    def test_unavailable_ingredient_makes_every_food_of_the_recipe_unresolved(self, mocker, tmp_path):
+    def test_unavailable_ingredient_makes_every_food_of_the_recipe_lookup_failed(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
         mock_fetch = self._fetch(mocker, {1: TOMATO_HIT})  # FDC ID 2 cannot be fetched
 
@@ -767,7 +793,8 @@ class TestEnrichCustomFoods:
             ["Caprese to go", "Salat Caprese"], {}, {}, db, "fake-key", custom_foods=CAPRESE_FOODS,
         )
 
-        assert result["unresolved"] == {"Salat Caprese", "Caprese to go"}
+        assert result["lookup_failed"] == {"Salat Caprese", "Caprese to go"}
+        assert result["not_in_usda"] == set()
         assert result["custom"] == {}
         # The failing ID is asked for once per run, not once per food
         assert sorted(call.args[0] for call in mock_fetch.call_args_list) == [1, 2]
@@ -816,6 +843,19 @@ class TestEnrichCustomFoods:
         assert result["custom"]["Salat Caprese"]["macro_distance"] > GOOD_DISTANCE
         assert result["low_confidence"] == {}
 
+    def test_recipe_wins_over_a_not_found_record(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert({
+            "original_name": "Salat Caprese", "usda_query": "Salat Caprese", "not_found": True,
+            "match_version": MATCH_VERSION, "last_updated": "2026-10-01",
+        })
+        self._fetch(mocker, {1: TOMATO_HIT, 2: MOZZARELLA_HIT})
+
+        result = enrich_all_foods(["Salat Caprese"], {}, {}, db, "fake-key", custom_foods=CAPRESE_FOODS)
+
+        assert result["custom"]["Salat Caprese"]["recipe"] == "caprese"
+        assert result["not_in_usda"] == set()
+
     def test_without_custom_foods_nothing_is_custom(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
         mocker.patch("omni_pilot.enricher.search_usda", return_value=[])
@@ -823,4 +863,4 @@ class TestEnrichCustomFoods:
         result = enrich_all_foods(["Salat Caprese"], {}, {}, db, "fake-key")
 
         assert result["custom"] == {}
-        assert result["unresolved"] == {"Salat Caprese"}
+        assert result["not_in_usda"] == {"Salat Caprese"}

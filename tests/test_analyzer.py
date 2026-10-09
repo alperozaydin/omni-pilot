@@ -107,7 +107,7 @@ class TestAnalyze:
             enrichment(
                 {"Eggs": {"vitamin_a_mcg": 149.0, "calcium_mg": 50.0}},
                 skipped={"Water"},
-                unresolved={"Lachs"},
+                lookup_failed={"Lachs"},
             ),
             self._make_ref_ranges(),
         )
@@ -541,7 +541,7 @@ class TestLowConfidenceCoverage:
             entries,
             enrichment(
                 {"Caprese": {"vitamin_a_mcg": 10.0}, "Eggs": {"vitamin_a_mcg": 10.0}},
-                skipped={"Water"}, unresolved={"Lachs"}, low_confidence=low_confidence,
+                skipped={"Water"}, lookup_failed={"Lachs"}, low_confidence=low_confidence,
             ),
             self.REF_RANGES,
         )
