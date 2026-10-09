@@ -44,9 +44,11 @@ def _make_analysis_result() -> dict:
             "total_food_entries": 223,
             "mapped_entries": 207,
             "skipped_entries": 12,
-            "unresolved_entries": 4,
+            "not_in_usda_entries": 3,
+            "lookup_failed_entries": 1,
             "skipped_foods": ["Quick Add", "Dessert, Prepared"],
-            "unresolved_foods": ["Unknown Thing"],
+            "not_in_usda_foods": ["Unknown Thing"],
+            "lookup_failed_foods": ["Himbeeren"],
             "low_confidence_foods": [],
             "low_confidence_weight_pct": 0.0,
             "custom_recipes": [],
@@ -210,7 +212,8 @@ class TestLowConfidenceWarning:
     def test_html_shows_warnings_block_for_low_confidence_alone(self, tmp_path):
         result = _make_analysis_result_with_low_confidence()
         result["coverage"]["skipped_foods"] = []
-        result["coverage"]["unresolved_foods"] = []
+        result["coverage"]["not_in_usda_foods"] = []
+        result["coverage"]["lookup_failed_foods"] = []
         html_path = str(tmp_path / "report.html")
         generate_html_report(result, html_path)
         with open(html_path) as f:
@@ -279,3 +282,56 @@ class TestCustomFoodsReport:
         with open(html_path) as f:
             assert "Custom foods" not in f.read()
 
+
+class TestMissingFoodWarnings:
+    SETTINGS = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+
+    def test_terminal_shows_counts_and_both_warning_lines(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        print_terminal_report(_make_analysis_result(), self.SETTINGS)
+        out = capsys.readouterr().out
+        assert "207/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed)" in out
+        assert "⚠ Not in USDA: Unknown Thing — give them a custom recipe in custom_foods.yaml" in out
+        assert "⚠ Lookup failed: Himbeeren — retried next run" in out
+        assert "Unresolved" not in out
+
+    def test_terminal_omits_lines_with_no_foods(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        result = _make_analysis_result()
+        result["coverage"]["not_in_usda_foods"] = []
+        result["coverage"]["lookup_failed_foods"] = []
+        print_terminal_report(result, self.SETTINGS)
+        out = capsys.readouterr().out
+        assert "Not in USDA:" not in out
+        assert "Lookup failed:" not in out
+
+    def test_terminal_prints_brackets_in_food_names_literally(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        result = _make_analysis_result()
+        result["coverage"]["not_in_usda_foods"] = ["Reis [bio]"]
+        result["coverage"]["lookup_failed_foods"] = ["Tee [grün]"]
+        print_terminal_report(result, self.SETTINGS)
+        out = capsys.readouterr().out
+        assert "Not in USDA: Reis [bio]" in out
+        assert "Lookup failed: Tee [grün]" in out
+
+    def test_html_shows_counts_and_both_warning_lines(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(_make_analysis_result(), html_path)
+        with open(html_path) as f:
+            html = f.read()
+        assert "207/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed)" in html
+        assert "⚠ Not in USDA: Unknown Thing — give them a custom recipe in custom_foods.yaml" in html
+        assert "⚠ Lookup failed: Himbeeren — retried next run" in html
+        assert "Unresolved" not in html
+
+    def test_html_omits_lines_with_no_foods(self, tmp_path):
+        result = _make_analysis_result()
+        result["coverage"]["not_in_usda_foods"] = []
+        result["coverage"]["lookup_failed_foods"] = []
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(result, html_path)
+        with open(html_path) as f:
+            html = f.read()
+        assert "Not in USDA:" not in html
+        assert "Lookup failed:" not in html

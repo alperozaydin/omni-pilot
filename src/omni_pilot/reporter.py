@@ -68,8 +68,12 @@ def _coverage_line(coverage: dict) -> str:
     mapped = coverage["mapped_entries"]
     total = coverage["total_food_entries"]
     skipped = coverage["skipped_entries"]
-    unresolved = coverage["unresolved_entries"]
-    return f"{mapped}/{total} entries analyzed ({skipped} skipped, {unresolved} unresolved)"
+    not_in_usda = coverage["not_in_usda_entries"]
+    lookup_failed = coverage["lookup_failed_entries"]
+    return (
+        f"{mapped}/{total} entries analyzed "
+        f"({skipped} skipped, {not_in_usda} not in USDA, {lookup_failed} lookup failed)"
+    )
 
 
 def _low_confidence_line(coverage: dict) -> str | None:
@@ -202,9 +206,15 @@ def print_terminal_report(result: dict, settings: dict) -> None:
     if coverage["skipped_foods"]:
         foods_str = ", ".join(coverage["skipped_foods"])
         console.print(f"  ⚠ Skipped foods: {foods_str}", style="yellow")
-    if coverage["unresolved_foods"]:
-        foods_str = ", ".join(coverage["unresolved_foods"])
-        console.print(f"  ⚠ Unresolved foods: {foods_str}", style="red")
+    # Text, not markup strings: food names can contain "[...]".
+    if coverage["not_in_usda_foods"]:
+        foods_str = ", ".join(coverage["not_in_usda_foods"])
+        console.print(Text(
+            f"  ⚠ Not in USDA: {foods_str} — give them a custom recipe in custom_foods.yaml", style="red",
+        ))
+    if coverage["lookup_failed_foods"]:
+        foods_str = ", ".join(coverage["lookup_failed_foods"])
+        console.print(Text(f"  ⚠ Lookup failed: {foods_str} — retried next run", style="red"))
     low_confidence_line = _low_confidence_line(coverage)
     if low_confidence_line:
         # Text, not a markup string: food and USDA names can contain "[...]".
@@ -305,10 +315,15 @@ HTML_TEMPLATE = """\
     {% if has_floor %}
     <p class="footnote">* computed from partial USDA data — the true value can only be higher</p>
     {% endif %}
-    {% if skipped_foods or unresolved_foods or low_confidence_line %}
+    {% if skipped_foods or not_in_usda_foods or lookup_failed_foods or low_confidence_line %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
-        {% if unresolved_foods %}<p>⚠ Unresolved: {{ unresolved_foods|join(", ") }}</p>{% endif %}
+        {% if not_in_usda_foods %}
+        <p>⚠ Not in USDA: {{ not_in_usda_foods|join(", ") }} — give them a custom recipe in custom_foods.yaml</p>
+        {% endif %}
+        {% if lookup_failed_foods %}
+        <p>⚠ Lookup failed: {{ lookup_failed_foods|join(", ") }} — retried next run</p>
+        {% endif %}
         {% if low_confidence_line %}<p>⚠ {{ low_confidence_line }}</p>{% endif %}
     </div>
     {% endif %}
@@ -365,7 +380,8 @@ def generate_html_report(result: dict, output_path: str) -> None:
         categories=categories,
         has_floor=any(n["is_floor"] for n in nutrients.values()),
         skipped_foods=coverage["skipped_foods"],
-        unresolved_foods=coverage["unresolved_foods"],
+        not_in_usda_foods=coverage["not_in_usda_foods"],
+        lookup_failed_foods=coverage["lookup_failed_foods"],
         low_confidence_line=_low_confidence_line(coverage),
         custom_recipes=[
             {

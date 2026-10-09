@@ -156,14 +156,17 @@ def cmd_review(args: argparse.Namespace) -> None:
 
     names = sorted(set(logged) | set(matches) | set(mappings) | set(custom["by_food"]),
                    key=lambda n: (-grams.get(n, 0.0), n.lower()))
-    groups: dict[str, list[str]] = {"custom": [], "skipped": [], "searched": [], "not looked up": []}
+    groups: dict[str, list[str]] = {
+        "custom": [], "skipped": [], "searched": [], "not in usda": [], "not looked up": [],
+    }
     for name in names:
         if name in custom["by_food"]:
             groups["custom"].append(name)
         elif mappings.get(name, "").strip().lower() == "skip":
             groups["skipped"].append(name)
         elif name in matches:
-            groups["searched"].append(name)
+            # A not-found record (BAR-79) has a query but no match
+            groups["not in usda" if matches[name].get("not_found") else "searched"].append(name)
         else:
             groups["not looked up"].append(name)
 
@@ -186,6 +189,11 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(header(name))
         print(f"    looked up as: {e.get('usda_query')}")
         print(f"    matched to  : {e.get('usda_name')}  [{e.get('confidence', '?')}{off}]")
+    if groups["not in usda"]:
+        print(f"\n== Not in USDA ({len(groups['not in usda'])}): give them a recipe")
+        for name in groups["not in usda"]:
+            print(header(name))
+            print(f"    looked up as: {matches[name].get('usda_query')}")
     print(f"\n== Skipped, not counted ({len(groups['skipped'])}): should any of these count?")
     for name in groups["skipped"]:
         print(header(name, check_macros=False))

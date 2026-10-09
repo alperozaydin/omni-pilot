@@ -160,7 +160,7 @@ class TestCLIAnalyze:
         )
         mocker.patch(
             "omni_pilot.cli.enrich_all_foods",
-            return_value=enrichment({"Apfel": {}}, skipped={"Wasser"}, unresolved={"Lachs"}),
+            return_value=enrichment({"Apfel": {}}, skipped={"Wasser"}, lookup_failed={"Lachs"}),
         )
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")
