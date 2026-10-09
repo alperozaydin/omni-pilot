@@ -3,6 +3,8 @@ name = "omni-pilot"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "jinja2>=3.1.0",
