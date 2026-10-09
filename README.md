@@ -4,6 +4,8 @@ Omni Pilot is an intelligent nutrition and workout analysis application. The fir
 
 MacroFactor tracks calories and macros well, but its micronutrient tracking can be incomplete. Omni Pilot bridges this gap by automatically translating and cleaning messy food log strings with Google's **Gemini API**, querying the **USDA FoodData Central** database for complete vitamin, mineral, and amino acid profiles, and generating interactive visual reports on both desktop and mobile (**iPhone via a-Shell**).
 
+> **Not medical advice.** Omni Pilot estimates nutrient intake from food logs and public reference data, so its figures can be incomplete or wrong. Use it for general information only, and talk to a doctor or registered dietitian before changing your diet or supplements.
+
 ---
 
 ## Key Features
@@ -195,3 +197,9 @@ Omni Pilot shares and synchronizes your food translations and USDA micronutrient
   ```bash
   uv pip compile pyproject.toml -o requirements.txt
   ```
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE).
