@@ -318,8 +318,12 @@ HTML_TEMPLATE = """\
     {% if skipped_foods or not_in_usda_foods or lookup_failed_foods or low_confidence_line %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
-        {% if not_in_usda_foods %}<p>⚠ Not in USDA: {{ not_in_usda_foods|join(", ") }} — fix their mapping in food_mappings.yaml</p>{% endif %}
-        {% if lookup_failed_foods %}<p>⚠ Lookup failed: {{ lookup_failed_foods|join(", ") }} — retried next run</p>{% endif %}
+        {% if not_in_usda_foods %}
+        <p>⚠ Not in USDA: {{ not_in_usda_foods|join(", ") }} — fix their mapping in food_mappings.yaml</p>
+        {% endif %}
+        {% if lookup_failed_foods %}
+        <p>⚠ Lookup failed: {{ lookup_failed_foods|join(", ") }} — retried next run</p>
+        {% endif %}
         {% if low_confidence_line %}<p>⚠ {{ low_confidence_line }}</p>{% endif %}
     </div>
     {% endif %}
