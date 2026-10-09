@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from datetime import date
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import requests
 from tinydb import Query, TinyDB
@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 # Bump whenever the candidate-picking logic changes in a way that should
 # re-pick cached foods: entries stamped with an older version are re-matched.
 MATCH_VERSION = 1
+# Days a "not in USDA" answer is reused before the food is searched again,
+# in case USDA has added it since.
+NOT_FOUND_TTL_DAYS = 30
 SEARCH_PAGE_SIZE = 25
 # USDA's search endpoint rejects "/" and intermittently rejects brackets (HTTP 400).
 _UNSAFE_QUERY_CHARS = re.compile(r"[()\[\]{}/\\]")
@@ -66,6 +69,11 @@ class FoodMatch(TypedDict):
     usda_name: str
     confidence: str  # "good" | "weak" | "no_macros" | "unverified"
     macro_distance: float | None
+
+
+# Why get_food_match has no match: USDA answered and has no such food
+# ("not_in_usda", cached), or USDA could not be asked ("lookup_failed", never cached).
+LookupMiss = Literal["not_in_usda", "lookup_failed"]
 
 
 class UsdaFood(TypedDict):
@@ -206,13 +214,14 @@ def get_food_candidates(query: str, api_key: str) -> tuple[list[Candidate], bool
     Hits for the query itself come first, then hits for its head words alone
     (e.g. "chickpea"), which surface forms the full query ranks out of view.
 
-    Also returns whether the set is complete. It is incomplete only when the
-    head-word search fails outright (as opposed to running and finding
-    nothing) — a pick made from an incomplete set should not be trusted as
-    final. Search 1 failing or finding nothing yields no candidates at all,
-    which is unaffected by completeness.
+    Also returns whether the set is complete: False when any search failed
+    outright (as opposed to running and finding nothing). A pick made from an
+    incomplete set should not be trusted as final, and no candidates from an
+    incomplete set mean USDA could not be asked, not that it has no such food.
     """
     hits = search_usda(query, api_key)
+    if hits is None:
+        return [], False
     if not hits:
         return [], True
     head, _ = matcher.head_words(query)
@@ -349,6 +358,15 @@ def _is_current(entry: dict) -> bool:
     return entry.get("match_version", 0) >= MATCH_VERSION
 
 
+def _is_fresh_not_found(entry: dict) -> bool:
+    """Whether a not-found record can still be trusted without asking USDA again."""
+    try:
+        checked = date.fromisoformat(entry["last_updated"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return _is_current(entry) and (date.today() - checked).days < NOT_FOUND_TTL_DAYS
+
+
 def _match_from_entry(entry: dict, confidence: str | None = None) -> FoodMatch:
     return FoodMatch(
         per_100g=entry["per_100g"],
@@ -364,14 +382,19 @@ def get_food_match(
     logged: LoggedMacros | None,
     db: TinyDB,
     api_key: str,
-) -> FoodMatch | None:
+) -> FoodMatch | LookupMiss:
     """Get the USDA match and per-100g micro profile for a food.
 
     A cache entry is reused only when both its query is current and its
     match_version is at least the current one (see `_is_current`). An entry
     picked by older matching logic is re-picked, but kept (as "unverified")
     if the re-pick fails, so a network hiccup never turns a known food into
-    an unresolved one. Returns None if the food cannot be resolved at all.
+    an unresolved one.
+
+    A search that ran and found nothing is cached as a not-found record
+    (`not_found: True`, no profile) and answered from the cache for
+    NOT_FOUND_TTL_DAYS. A failed request caches nothing, so it is retried
+    next run. Without a match, returns "not_in_usda" or "lookup_failed".
 
     A pick made from an incomplete candidate set (the head-word search
     failed) is cached but left without `match_version`, so it is treated as
@@ -383,7 +406,10 @@ def get_food_match(
     if cached:
         entry = cached[0]
         if entry.get("usda_query") == usda_query:
-            if _is_current(entry):
+            if entry.get("not_found"):
+                if _is_fresh_not_found(entry):
+                    return "not_in_usda"
+            elif _is_current(entry):
                 return _match_from_entry(entry)
             stale_entry = entry
         else:
@@ -394,10 +420,24 @@ def get_food_match(
     candidates, complete = get_food_candidates(usda_query, api_key)
     pick = matcher.pick_best(candidates, usda_query, logged)
     if pick is None:
-        if stale_entry is not None:
+        if stale_entry is not None and not stale_entry.get("not_found"):
             logger.warning("Re-matching '%s' failed; keeping its previous USDA match", food_name)
             return _match_from_entry(stale_entry, confidence="unverified")
-        return None
+        if not complete:
+            # USDA could not be asked; an expired not-found record is still its last answer
+            return "not_in_usda" if stale_entry is not None else "lookup_failed"
+        db.upsert({
+            "original_name": food_name,
+            "usda_query": usda_query,
+            "not_found": True,
+            "match_version": MATCH_VERSION,
+            "last_updated": str(date.today()),
+        }, Food.original_name == food_name)
+        return "not_in_usda"
+
+    if stale_entry is not None and stale_entry.get("not_found"):
+        # upsert merges fields, so the not_found flag must go with the record
+        db.remove(Food.original_name == food_name)
 
     candidate = pick["candidate"]
     micros = extract_micros_from_usda(candidate["raw"])
@@ -534,7 +574,7 @@ def enrich_all_foods(
         query = mapping if mapping else food_name
         match = get_food_match(food_name, query, logged_macros.get(food_name), db, api_key)
 
-        if match is None:
+        if isinstance(match, str):
             result["unresolved"].add(food_name)
             logger.warning(
                 "Could not resolve '%s' (query: '%s') — marking as unresolved",
