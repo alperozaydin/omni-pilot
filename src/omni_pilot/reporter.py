@@ -76,6 +76,27 @@ def _coverage_line(coverage: dict) -> str:
     )
 
 
+def _not_in_usda_line(coverage: dict) -> str | None:
+    """Name the foods USDA has no match for, if any."""
+    foods = coverage["not_in_usda_foods"]
+    if not foods:
+        return None
+    share = coverage["not_in_usda_weight_pct"]
+    return (
+        f"Not in USDA ({share:.0f}% of food weight): {', '.join(foods)}"
+        " — give them a custom recipe in custom_foods.yaml"
+    )
+
+
+def _lookup_failed_line(coverage: dict) -> str | None:
+    """Name the foods USDA could not be asked about, if any."""
+    foods = coverage["lookup_failed_foods"]
+    if not foods:
+        return None
+    share = coverage["lookup_failed_weight_pct"]
+    return f"Lookup failed ({share:.0f}% of food weight): {', '.join(foods)} — retried next run"
+
+
 def _low_confidence_line(coverage: dict) -> str | None:
     """Name the foods whose USDA match fits the logged macros poorly, if any."""
     foods = coverage["low_confidence_foods"]
@@ -207,14 +228,9 @@ def print_terminal_report(result: dict, settings: dict) -> None:
         foods_str = ", ".join(coverage["skipped_foods"])
         console.print(f"  ⚠ Skipped foods: {foods_str}", style="yellow")
     # Text, not markup strings: food names can contain "[...]".
-    if coverage["not_in_usda_foods"]:
-        foods_str = ", ".join(coverage["not_in_usda_foods"])
-        console.print(Text(
-            f"  ⚠ Not in USDA: {foods_str} — give them a custom recipe in custom_foods.yaml", style="red",
-        ))
-    if coverage["lookup_failed_foods"]:
-        foods_str = ", ".join(coverage["lookup_failed_foods"])
-        console.print(Text(f"  ⚠ Lookup failed: {foods_str} — retried next run", style="red"))
+    for line in (_not_in_usda_line(coverage), _lookup_failed_line(coverage)):
+        if line:
+            console.print(Text(f"  ⚠ {line}", style="red"))
     low_confidence_line = _low_confidence_line(coverage)
     if low_confidence_line:
         # Text, not a markup string: food and USDA names can contain "[...]".
@@ -315,15 +331,11 @@ HTML_TEMPLATE = """\
     {% if has_floor %}
     <p class="footnote">* computed from partial USDA data — the true value can only be higher</p>
     {% endif %}
-    {% if skipped_foods or not_in_usda_foods or lookup_failed_foods or low_confidence_line %}
+    {% if skipped_foods or not_in_usda_line or lookup_failed_line or low_confidence_line %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
-        {% if not_in_usda_foods %}
-        <p>⚠ Not in USDA: {{ not_in_usda_foods|join(", ") }} — give them a custom recipe in custom_foods.yaml</p>
-        {% endif %}
-        {% if lookup_failed_foods %}
-        <p>⚠ Lookup failed: {{ lookup_failed_foods|join(", ") }} — retried next run</p>
-        {% endif %}
+        {% if not_in_usda_line %}<p>⚠ {{ not_in_usda_line }}</p>{% endif %}
+        {% if lookup_failed_line %}<p>⚠ {{ lookup_failed_line }}</p>{% endif %}
         {% if low_confidence_line %}<p>⚠ {{ low_confidence_line }}</p>{% endif %}
     </div>
     {% endif %}
@@ -380,8 +392,8 @@ def generate_html_report(result: dict, output_path: str) -> None:
         categories=categories,
         has_floor=any(n["is_floor"] for n in nutrients.values()),
         skipped_foods=coverage["skipped_foods"],
-        not_in_usda_foods=coverage["not_in_usda_foods"],
-        lookup_failed_foods=coverage["lookup_failed_foods"],
+        not_in_usda_line=_not_in_usda_line(coverage),
+        lookup_failed_line=_lookup_failed_line(coverage),
         low_confidence_line=_low_confidence_line(coverage),
         custom_recipes=[
             {

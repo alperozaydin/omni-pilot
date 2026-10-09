@@ -49,6 +49,8 @@ def _make_analysis_result() -> dict:
             "skipped_foods": ["Quick Add", "Dessert, Prepared"],
             "not_in_usda_foods": ["Unknown Thing"],
             "lookup_failed_foods": ["Himbeeren"],
+            "not_in_usda_weight_pct": 2.4,
+            "lookup_failed_weight_pct": 0.6,
             "low_confidence_foods": [],
             "low_confidence_weight_pct": 0.0,
             "custom_recipes": [],
@@ -291,8 +293,11 @@ class TestMissingFoodWarnings:
         print_terminal_report(_make_analysis_result(), self.SETTINGS)
         out = capsys.readouterr().out
         assert "207/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed)" in out
-        assert "⚠ Not in USDA: Unknown Thing — give them a custom recipe in custom_foods.yaml" in out
-        assert "⚠ Lookup failed: Himbeeren — retried next run" in out
+        assert (
+            "⚠ Not in USDA (2% of food weight): Unknown Thing — give them a custom recipe in custom_foods.yaml"
+            in out
+        )
+        assert "⚠ Lookup failed (1% of food weight): Himbeeren — retried next run" in out
         assert "Unresolved" not in out
 
     def test_terminal_omits_lines_with_no_foods(self, capsys, monkeypatch):
@@ -302,8 +307,8 @@ class TestMissingFoodWarnings:
         result["coverage"]["lookup_failed_foods"] = []
         print_terminal_report(result, self.SETTINGS)
         out = capsys.readouterr().out
-        assert "Not in USDA:" not in out
-        assert "Lookup failed:" not in out
+        assert "Not in USDA" not in out
+        assert "Lookup failed" not in out
 
     def test_terminal_prints_brackets_in_food_names_literally(self, capsys, monkeypatch):
         monkeypatch.setenv("COLUMNS", "300")
@@ -312,8 +317,8 @@ class TestMissingFoodWarnings:
         result["coverage"]["lookup_failed_foods"] = ["Tee [grün]"]
         print_terminal_report(result, self.SETTINGS)
         out = capsys.readouterr().out
-        assert "Not in USDA: Reis [bio]" in out
-        assert "Lookup failed: Tee [grün]" in out
+        assert "Not in USDA (2% of food weight): Reis [bio]" in out
+        assert "Lookup failed (1% of food weight): Tee [grün]" in out
 
     def test_html_shows_counts_and_both_warning_lines(self, tmp_path):
         html_path = str(tmp_path / "report.html")
@@ -321,8 +326,11 @@ class TestMissingFoodWarnings:
         with open(html_path) as f:
             html = f.read()
         assert "207/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed)" in html
-        assert "⚠ Not in USDA: Unknown Thing — give them a custom recipe in custom_foods.yaml" in html
-        assert "⚠ Lookup failed: Himbeeren — retried next run" in html
+        assert (
+            "⚠ Not in USDA (2% of food weight): Unknown Thing — give them a custom recipe in custom_foods.yaml"
+            in html
+        )
+        assert "⚠ Lookup failed (1% of food weight): Himbeeren — retried next run" in html
         assert "Unresolved" not in html
 
     def test_html_omits_lines_with_no_foods(self, tmp_path):
@@ -333,5 +341,5 @@ class TestMissingFoodWarnings:
         generate_html_report(result, html_path)
         with open(html_path) as f:
             html = f.read()
-        assert "Not in USDA:" not in html
-        assert "Lookup failed:" not in html
+        assert "Not in USDA" not in html
+        assert "Lookup failed" not in html

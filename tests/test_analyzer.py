@@ -125,8 +125,9 @@ class TestAnalyze:
         assert coverage["not_in_usda_foods"] == ["Braun Linsen"]
         assert coverage["lookup_failed_entries"] == 2
         assert coverage["lookup_failed_foods"] == ["Lachs"]
-        # Neither counts toward coverage: only Eggs' weight is analysed.
-        assert result["nutrients"]["vitamin_a_mcg"]["coverage_pct"] == 100.0
+        # On the one counted day, Lachs and Braun Linsen are unmeasured beside
+        # Eggs (200 of 580 g); the 14th has no resolved food and is not counted.
+        assert result["nutrients"]["vitamin_a_mcg"]["coverage_pct"] == 34.5
 
     def test_unmeasured_nutrient_reports_zero_coverage(self):
         entries = [self._make_entry("Eggs", "2026-07-13", 200.0)]
@@ -355,6 +356,80 @@ class TestCoverageAccounting:
         unobtainium = result["nutrients"]["unobtainium_mg"]
         assert unobtainium["daily_avg"] == pytest.approx(0.0)
         assert unobtainium["coverage_pct"] == 0.0
+
+
+class TestUnresolvedFoodCoverage:
+    """Foods with no USDA profile leave a hole in their day's totals (BAR-32)."""
+
+    REF_RANGES = {
+        "demographic": {},
+        "nutrients": {
+            "choline_mg": {"name": "Choline", "unit": "mg", "type": "ai", "ai": 550, "ul": 3500},
+            "vitamin_a_mcg": {"name": "Vitamin A", "unit": "mcg", "type": "rda", "rda": 900, "ul": 3000},
+        },
+    }
+    PROFILES = {"Eggs": {"choline_mg": 294.0, "vitamin_a_mcg": 149.0}}
+
+    def _entries(self) -> list[dict]:
+        return [
+            {"date": "2026-08-01", "food_name": "Eggs", "total_weight_g": 200.0},
+            {"date": "2026-08-02", "food_name": "Eggs", "total_weight_g": 200.0},
+            {"date": "2026-08-02", "food_name": "Salmon", "total_weight_g": 300.0},
+        ]
+
+    @pytest.mark.parametrize("unresolved", ["not_in_usda", "lookup_failed"])
+    def test_unresolved_food_on_a_counted_day_is_unmeasured(self, unresolved):
+        result = analyze(
+            self._entries(), enrichment(self.PROFILES, **{unresolved: {"Salmon"}}), self.REF_RANGES,
+        )
+        choline = result["nutrients"]["choline_mg"]
+        # 400 g of eggs measured, 300 g of salmon not: 400 / 700
+        assert choline["coverage_pct"] == 57.1
+        assert result["nutrients"]["vitamin_a_mcg"]["coverage_pct"] == 57.1
+
+    def test_unresolved_food_marks_a_deficient_verdict_as_floor(self):
+        result = analyze(
+            self._entries(), enrichment(self.PROFILES, not_in_usda={"Salmon"}), self.REF_RANGES,
+        )
+        vit_a = result["nutrients"]["vitamin_a_mcg"]
+        assert vit_a["status"] == "deficient"
+        assert vit_a["is_floor"] is True
+
+    def test_unresolved_food_on_a_dropped_day_is_not_unmeasured(self):
+        # A day with no resolved food leaves the average entirely, so its
+        # unresolved food cannot pull the average down.
+        entries = [
+            {"date": "2026-08-01", "food_name": "Eggs", "total_weight_g": 200.0},
+            {"date": "2026-08-02", "food_name": "Salmon", "total_weight_g": 300.0},
+        ]
+        result = analyze(entries, enrichment(self.PROFILES, not_in_usda={"Salmon"}), self.REF_RANGES)
+        assert result["period"]["days"] == 1
+        assert result["nutrients"]["choline_mg"]["coverage_pct"] == 100.0
+
+    def test_unresolved_weight_shares_exclude_skipped_food(self):
+        entries = [
+            {"date": "2026-08-01", "food_name": "Eggs", "total_weight_g": 500.0},
+            {"date": "2026-08-01", "food_name": "Salmon", "total_weight_g": 300.0},
+            {"date": "2026-08-01", "food_name": "Lachs", "total_weight_g": 200.0},
+            {"date": "2026-08-01", "food_name": "Water", "total_weight_g": 500.0},
+            # A dropped day still counts: the warning names what is missing from the log
+            {"date": "2026-08-02", "food_name": "Salmon", "total_weight_g": 100.0},
+        ]
+        result = analyze(
+            entries,
+            enrichment(self.PROFILES, not_in_usda={"Salmon"}, lookup_failed={"Lachs"}, skipped={"Water"}),
+            self.REF_RANGES,
+        )
+        coverage = result["coverage"]
+        # Of 1100 g food weight: 400 g not in USDA, 200 g failed
+        assert coverage["not_in_usda_weight_pct"] == 36.4
+        assert coverage["lookup_failed_weight_pct"] == 18.2
+
+    def test_unresolved_weight_shares_zero_without_food_weight(self):
+        entries = [{"date": "2026-08-01", "food_name": "Water", "total_weight_g": 500.0}]
+        result = analyze(entries, enrichment(skipped={"Water"}), self.REF_RANGES)
+        assert result["coverage"]["not_in_usda_weight_pct"] == 0.0
+        assert result["coverage"]["lookup_failed_weight_pct"] == 0.0
 
 
 class TestFloorMarking:
