@@ -23,8 +23,15 @@ logger = logging.getLogger(__name__)
 # (connect, read) seconds. The connect timeout applies to each address the host
 # resolves to, tried in turn, and Gemini's host resolves to 16 of them: at 30s
 # each, an unreachable network kept the CLI waiting for minutes. The read
-# timeout leaves room for the model to think (~15s for a dozen foods).
+# timeout leaves room for the model to think (~5-20s for a few foods at low
+# thinking, see GEMINI_THINKING_LEVEL).
 GEMINI_TIMEOUT = (5, 60)
+
+# gemini-flash-latest thinks for 30-60s at its default level before sending a
+# byte, which ran into the read timeout on the iPhone; "low" answers in 5-20s
+# with translations as good. Gemini 3 models take this setting, 2.5 models
+# don't.
+GEMINI_THINKING_LEVEL = "low"
 
 GEMINI_PROMPT_TEMPLATE = """
 You are an expert nutritionist translating food log entries (mostly German or branded) into optimal USDA FoodData Central (SR Legacy and Foundation datasets) search queries.
@@ -88,6 +95,7 @@ def translate_new_foods(foods_list: list[str], api_key: str, model: str = "gemin
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.0,
+            "thinkingConfig": {"thinkingLevel": GEMINI_THINKING_LEVEL},
             "responseMimeType": "application/json",
             "responseSchema": {
                 "type": "ARRAY",

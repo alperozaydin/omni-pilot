@@ -80,8 +80,18 @@ def test_translate_new_foods_gives_up_connecting_quickly(mocker):
 
     connect_timeout, read_timeout = mock_post.call_args.kwargs["timeout"]
     assert connect_timeout <= 5
-    # Gemini takes ~15s to answer for a dozen foods; leave it room to think.
+    # Gemini takes ~5-20s to answer for a few foods at low thinking; leave it room.
     assert read_timeout >= 60
+
+
+def test_translate_new_foods_keeps_gemini_thinking_low(mocker):
+    """At its default thinking level gemini-flash-latest took 30-60s for 7 foods and hit the read timeout."""
+    mock_post = mocker.patch("requests.post", return_value=_gemini_reply(mocker, ["milk"]))
+
+    translate_new_foods(["Milch"], api_key="fake_key")
+
+    generation_config = mock_post.call_args.kwargs["json"]["generationConfig"]
+    assert generation_config["thinkingConfig"] == {"thinkingLevel": "low"}
 
 
 def test_resolve_and_sync_mappings_gemini_success(mocker, tmp_path):
