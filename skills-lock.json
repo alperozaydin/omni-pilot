@@ -3,7 +3,6 @@
   "skills": {
     "omni-pilot-custom-foods": {
       "source": "alperozaydin/my-skills",
-      "ref": "alozay/bar-79-not-in-usda-review-group",
       "sourceType": "github",
       "skillPath": "skills/omni-pilot-custom-foods/SKILL.md",
       "computedHash": "d660ba70f5add9cff098cb0ec3394852a41a6af3f38d34d04117313fd667970e"
