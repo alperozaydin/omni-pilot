@@ -58,6 +58,8 @@ class CoverageResult(TypedDict):
     skipped_foods: list[str]
     not_in_usda_foods: list[str]
     lookup_failed_foods: list[str]
+    not_in_usda_weight_pct: float
+    lookup_failed_weight_pct: float
     low_confidence_foods: list[LowConfidenceFood]
     low_confidence_weight_pct: float
     custom_recipes: list[CustomRecipeUse]
@@ -160,7 +162,9 @@ def analyze(
     contributes nothing to it, and its weight is booked as unmeasured rather
     than silently as 0.0. A custom food is counted part by part, each part
     weighing its share of the entry, so an ingredient missing a nutrient
-    books only its own share as unmeasured.
+    books only its own share as unmeasured. A not-in-USDA or failed food is
+    unmeasured for every nutrient, but only on a day that is counted: a day
+    with no resolved food leaves the average entirely.
     """
     total_entries = len(entries)
     mapped_entries = 0
@@ -183,6 +187,10 @@ def analyze(
     analysed_weight_g = 0.0
     low_confidence_weight_g: dict[str, float] = defaultdict(float)
     custom_weight_g: dict[str, float] = defaultdict(float)
+    # Consumed grams of not-in-USDA and failed foods, per date and per kind
+    unresolved_weight_by_date_g: dict[str, float] = defaultdict(float)
+    not_in_usda_weight_g = 0.0
+    lookup_failed_weight_g = 0.0
     dates: set[str] = set()
 
     for entry in entries:
@@ -190,18 +198,22 @@ def analyze(
         parts = _food_parts(food_name, enrichment)
 
         if parts is None:
-            # Skipped, not-in-USDA and failed foods are all excluded from
-            # coverage on both sides; they differ only in how the report
-            # labels them.
+            # A skipped food is excluded from coverage on both sides. A
+            # not-in-USDA or failed food is a hole in its day's totals, booked
+            # as unmeasured once the counted days are known.
             if food_name in enrichment["skipped"]:
                 skipped_entries += 1
                 skipped_food_names.add(food_name)
-            elif food_name in enrichment["not_in_usda"]:
+                continue
+            if food_name in enrichment["not_in_usda"]:
                 not_in_usda_entries += 1
                 not_in_usda_food_names.add(food_name)
+                not_in_usda_weight_g += entry["total_weight_g"]
             else:
                 lookup_failed_entries += 1
                 lookup_failed_food_names.add(food_name)
+                lookup_failed_weight_g += entry["total_weight_g"]
+            unresolved_weight_by_date_g[entry["date"]] += entry["total_weight_g"]
             continue
 
         mapped_entries += 1
@@ -231,6 +243,12 @@ def analyze(
                     for ck, value in zip(component_keys, component_values)
                 )
                 daily_totals[entry_date][nutrient_key] += contribution * (part_weight_g / 100.0)
+
+    unresolved_on_counted_days_g = sum(
+        grams for date, grams in unresolved_weight_by_date_g.items() if date in dates
+    )
+    for nutrient_key in nutrient_keys:
+        unmeasured_weight_g[nutrient_key] += unresolved_on_counted_days_g
 
     # Compute daily averages
     num_days = len(dates) if dates else 1
@@ -307,6 +325,10 @@ def analyze(
         round(100.0 * sum(low_confidence_weight_g.values()) / analysed_weight_g, 1)
         if analysed_weight_g > 0 else 0.0
     )
+    food_weight_g = analysed_weight_g + not_in_usda_weight_g + lookup_failed_weight_g
+
+    def food_weight_pct(grams: float) -> float:
+        return round(100.0 * grams / food_weight_g, 1) if food_weight_g > 0 else 0.0
 
     return AnalysisResult(
         period=PeriodResult(
@@ -324,6 +346,8 @@ def analyze(
             skipped_foods=sorted(skipped_food_names),
             not_in_usda_foods=sorted(not_in_usda_food_names),
             lookup_failed_foods=sorted(lookup_failed_food_names),
+            not_in_usda_weight_pct=food_weight_pct(not_in_usda_weight_g),
+            lookup_failed_weight_pct=food_weight_pct(lookup_failed_weight_g),
             low_confidence_foods=low_confidence_foods,
             low_confidence_weight_pct=low_confidence_weight_pct,
             custom_recipes=_custom_recipe_uses(enrichment["custom"], custom_weight_g),

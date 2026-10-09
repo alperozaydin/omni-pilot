@@ -185,6 +185,8 @@ Because the combined-nutrient sum now happens per entry, `daily_totals` is keyed
 
 Distinguishing "mapped to `skip`" from "lookup failed" is structurally broken today — both arrive as `None` — which is BAR-42 and explicitly out of scope. Until BAR-42 lands, both reach `analyze` as `enriched[name] is None`, so the two cannot be separated inside `analyze`. **This specification therefore books all `None` profiles as `skip` (excluded from both sides), matching today's `skipped_entries` behaviour**, and relies on `coverage.unresolved_entries` remaining the channel for lookup failures once BAR-42 makes it real. Decision 9's "stated separately in the report" is satisfied by §4.3's warning line, which already exists and is driven by `coverage.unresolved_foods`.
 
+> **Update (BAR-32, 2026-10-09).** BAR-42 split the `None` case into `skipped`, `not_in_usda` and `lookup_failed`, and BAR-32 now books the last two as unmeasured for every nutrient, completing decision 9. One refinement: only on a day that counts toward the average. A day with no resolved food leaves both numerator and denominator, so its unresolved food cannot deflate the figure and must not lower coverage either.
+
 **Coverage computation.** After the accumulation loop, for each nutrient key:
 
 ```python
@@ -354,4 +356,4 @@ Full suite green: `uv run pytest`. Lint clean: `ruff`.
 - **Internal consistency:** §4.1's booking table constrains decision 9; the constraint and its BAR-42 dependency are stated explicitly in both §4.1 and §7 rather than left as a contradiction.
 - **Scope:** single implementation plan. Covers one mechanism (per-nutrient weight coverage) and its two consumers (terminal, HTML).
 - **Ambiguity:** the two candidate readings of "coverage" — food count vs consumed weight — are resolved to weight in decision 4, with a test (§6.1, `test_coverage_is_weighted_by_consumed_weight`) pinning it. Whole-period vs per-day aggregation is resolved in decision 6.
-- **Known deviation:** decision 9 ("failed USDA lookups count as unmeasured") is only partially implementable before BAR-42, because `enrich_all_foods` encodes a deliberate `skip` and a failed lookup identically as `None`. §4.1 documents the interim behaviour and §7 records the dependency. This is the one place where the specification knowingly falls short of an approved decision.
+- **Known deviation:** decision 9 ("failed USDA lookups count as unmeasured") is only partially implementable before BAR-42, because `enrich_all_foods` encodes a deliberate `skip` and a failed lookup identically as `None`. §4.1 documents the interim behaviour and §7 records the dependency. This is the one place where the specification knowingly falls short of an approved decision. *Closed by BAR-32 — see the update note in §4.1.*
