@@ -149,7 +149,8 @@ def test_custom_foods_end_to_end(workspace, capsys):
     # Only the mozzarella's 66 g lacks vitamin K: 648 of 714 analysed grams measured
     assert nutrients["vitamin_k_mcg"]["coverage_pct"] == 90.8
     assert result["coverage"]["skipped_foods"] == ["Wasser"]
-    assert result["coverage"]["unresolved_foods"] == []
+    assert result["coverage"]["not_in_usda_foods"] == []
+    assert result["coverage"]["lookup_failed_foods"] == []
     assert result["coverage"]["low_confidence_foods"] == []
 
     assert "<h2>Custom foods</h2>" in html

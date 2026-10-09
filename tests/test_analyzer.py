@@ -96,10 +96,12 @@ class TestAnalyze:
         assert result["coverage"]["mapped_entries"] == 1
         assert result["coverage"]["skipped_entries"] == 1
 
-    def test_failed_lookup_reported_as_unresolved_not_skipped(self):
+    def test_missing_and_failed_foods_are_reported_apart_from_skipped(self):
         entries = [
             self._make_entry("Eggs", "2026-07-13", 200.0),
             self._make_entry("Lachs", "2026-07-13", 300.0),
+            self._make_entry("Lachs", "2026-07-14", 100.0),
+            self._make_entry("Braun Linsen", "2026-07-13", 80.0),
             self._make_entry("Water", "2026-07-13", 500.0),
         ]
         result = analyze(
@@ -107,19 +109,24 @@ class TestAnalyze:
             enrichment(
                 {"Eggs": {"vitamin_a_mcg": 149.0, "calcium_mg": 50.0}},
                 skipped={"Water"},
+                not_in_usda={"Braun Linsen"},
                 lookup_failed={"Lachs"},
             ),
             self._make_ref_ranges(),
         )
 
         coverage = result["coverage"]
-        # "You told it to ignore this" and "your data has a hole" are different
-        # report lines; a failed lookup must not read as an intentional skip.
+        # "You told it to ignore this", "USDA has no such food" and "USDA could
+        # not be asked" are different report lines.
         assert coverage["mapped_entries"] == 1
         assert coverage["skipped_entries"] == 1
         assert coverage["skipped_foods"] == ["Water"]
-        assert coverage["unresolved_entries"] == 1
-        assert coverage["unresolved_foods"] == ["Lachs"]
+        assert coverage["not_in_usda_entries"] == 1
+        assert coverage["not_in_usda_foods"] == ["Braun Linsen"]
+        assert coverage["lookup_failed_entries"] == 2
+        assert coverage["lookup_failed_foods"] == ["Lachs"]
+        # Neither counts toward coverage: only Eggs' weight is analysed.
+        assert result["nutrients"]["vitamin_a_mcg"]["coverage_pct"] == 100.0
 
     def test_unmeasured_nutrient_reports_zero_coverage(self):
         entries = [self._make_entry("Eggs", "2026-07-13", 200.0)]
@@ -528,7 +535,7 @@ class TestLowConfidenceCoverage:
 
         assert result["nutrients"]["vitamin_a_mcg"]["daily_avg"] == pytest.approx(20.0)
 
-    def test_denominator_excludes_skipped_and_unresolved_weight(self):
+    def test_denominator_excludes_skipped_and_lookup_failed_weight(self):
         entries = [
             {"date": "2026-08-09", "food_name": "Caprese", "total_weight_g": 100.0},
             {"date": "2026-08-09", "food_name": "Eggs", "total_weight_g": 100.0},
@@ -627,7 +634,8 @@ class TestCustomFoods:
 
         coverage = result["coverage"]
         assert coverage["mapped_entries"] == 2
-        assert coverage["unresolved_entries"] == 0
+        assert coverage["not_in_usda_entries"] == 0
+        assert coverage["lookup_failed_entries"] == 0
         # The custom food's weight is in the analysed-weight denominator
         assert coverage["low_confidence_weight_pct"] == 50.0
 

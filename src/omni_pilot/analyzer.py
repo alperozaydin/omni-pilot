@@ -53,9 +53,11 @@ class CoverageResult(TypedDict):
     total_food_entries: int
     mapped_entries: int
     skipped_entries: int
-    unresolved_entries: int
+    not_in_usda_entries: int
+    lookup_failed_entries: int
     skipped_foods: list[str]
-    unresolved_foods: list[str]
+    not_in_usda_foods: list[str]
+    lookup_failed_foods: list[str]
     low_confidence_foods: list[LowConfidenceFood]
     low_confidence_weight_pct: float
     custom_recipes: list[CustomRecipeUse]
@@ -163,9 +165,11 @@ def analyze(
     total_entries = len(entries)
     mapped_entries = 0
     skipped_entries = 0
-    unresolved_entries = 0
+    not_in_usda_entries = 0
+    lookup_failed_entries = 0
     skipped_food_names: set[str] = set()
-    unresolved_food_names: set[str] = set()
+    not_in_usda_food_names: set[str] = set()
+    lookup_failed_food_names: set[str] = set()
 
     # Collect all nutrient keys from reference_ranges
     nutrient_keys = list(ref_ranges["nutrients"].keys())
@@ -186,14 +190,18 @@ def analyze(
         parts = _food_parts(food_name, enrichment)
 
         if parts is None:
-            # Skipped and unresolved foods are both excluded from coverage on
-            # both sides; they differ only in how the report labels them.
+            # Skipped, not-in-USDA and failed foods are all excluded from
+            # coverage on both sides; they differ only in how the report
+            # labels them.
             if food_name in enrichment["skipped"]:
                 skipped_entries += 1
                 skipped_food_names.add(food_name)
+            elif food_name in enrichment["not_in_usda"]:
+                not_in_usda_entries += 1
+                not_in_usda_food_names.add(food_name)
             else:
-                unresolved_entries += 1
-                unresolved_food_names.add(food_name)
+                lookup_failed_entries += 1
+                lookup_failed_food_names.add(food_name)
             continue
 
         mapped_entries += 1
@@ -311,9 +319,11 @@ def analyze(
             total_food_entries=total_entries,
             mapped_entries=mapped_entries,
             skipped_entries=skipped_entries,
-            unresolved_entries=unresolved_entries,
+            not_in_usda_entries=not_in_usda_entries,
+            lookup_failed_entries=lookup_failed_entries,
             skipped_foods=sorted(skipped_food_names),
-            unresolved_foods=sorted(unresolved_food_names),
+            not_in_usda_foods=sorted(not_in_usda_food_names),
+            lookup_failed_foods=sorted(lookup_failed_food_names),
             low_confidence_foods=low_confidence_foods,
             low_confidence_weight_pct=low_confidence_weight_pct,
             custom_recipes=_custom_recipe_uses(enrichment["custom"], custom_weight_g),
