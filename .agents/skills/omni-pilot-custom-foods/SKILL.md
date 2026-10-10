@@ -98,6 +98,12 @@ database's copy of the translation overrides the file for any food already seen.
 - **No water as an ingredient.** USDA water has no amino acids, so it looks
   like missing data. For a dish denser than its cooked base, mix cooked and dry
   forms (e.g. cooked + dry bulgur) instead of dry + water.
+- **Exception: hydrated soy products.** Plant-based meat (soy chunks, vegan
+  nuggets) is dry soy protein plus water, and USDA has no hydrated entry: its
+  "meatless" foods are far fattier and lack amino acids entirely. Use soy
+  protein concentrate/isolate + water (`173647`) + the label's oil and salt.
+  Amino acid coverage then reads low, but the amounts are right, because all
+  the protein comes from the soy; say so in the report and in a file comment.
 - **Match the form eaten:** raw vs cooked, canned drained, fresh Laugenbrezel =
   `Pretzels, soft`, not the hard snack.
 - **One ingredient is fine.** A one-ingredient recipe pins a single food to one ID.
