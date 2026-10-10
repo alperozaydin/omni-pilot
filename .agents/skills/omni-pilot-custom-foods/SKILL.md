@@ -56,6 +56,8 @@ read every entry, and list for the user, heaviest first:
 - **Not in USDA** (its own group in `review`): USDA found nothing for the
   food's lookup text; give it a recipe (see below why editing the mapping
   does not work).
+- **US-fortified match:** a German rice, bread or milk matched to an
+  "enriched" or "with added vitamin A and vitamin D" entry.
 - **Custom foods marked ⚠** in `check`.
 
 Foods with "not in any export" were logged in older exports only; mention
@@ -87,6 +89,10 @@ database's copy of the translation overrides the file for any food already seen.
 - **Prefer SR Legacy.** Foundation foods often have 9–15 of 38 nutrients,
   and any missing nutrient lowers the food's coverage in the report. Use
   Foundation only when SR Legacy has no such food.
+- **Never a US-fortified entry.** Avoid "enriched" and "with added vitamin A
+  and vitamin D": German rice, bread and milk are not fortified, so those
+  entries overcount folate, iron, B vitamins and vitamin D. Use the
+  "unenriched" / "without added vitamin A and vitamin D" entry.
 - **Check coverage with `food`.** An ingredient lacking amino acids (water,
   arugula, dried fruit, sugar) is fine at a small share; avoid it as a large one.
 - **No water as an ingredient.** USDA water has no amino acids, so it looks
@@ -110,6 +116,7 @@ Carbs are compared both with and without fiber, as EU labels exclude fiber.
 |---|---|
 | Stopping at "off > 25%" when the logged macros are impossible (P+F+C well above 100 g per 100 g) | It's a logging error. Write a sensible recipe, note in a comment that it stays flagged until the weight is fixed in MacroFactor, and tell the user. |
 | Trusting an ID from memory or a comment | IDs get mislabelled (169248 is iceberg, not green leaf). Always confirm with `food`. |
+| A food name with a comma in a `foods: [...]` list | `[Rice, Cooked]` is read as two names; quote it: `["Rice, Cooked"]`. `check` flags the split halves as unknown names. |
 | Listing a food in two recipes | The loader rejects it. Extend the existing recipe's `foods` instead. |
 | Foods with no logged macros | `check` can't verify them; say so in the report. |
 | Changing amounts to fit macros beyond what the dish could contain | Tell the user the recipe needs their real composition instead. |
