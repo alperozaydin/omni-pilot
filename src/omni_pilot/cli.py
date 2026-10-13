@@ -96,6 +96,15 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     enrichment = enrich_all_foods(food_names, mappings, logged_macros, db, api_key, custom_foods=custom_foods)
     resolved = len(enrichment["profiles"]) + len(enrichment["custom"])
     print(f"  {resolved}/{len(food_names)} foods resolved.")
+    if resolved == 0 and enrichment["lookup_failed"]:
+        # Every nutrient would read as deficient, from no data at all.
+        # The cause is not known here (key, quota, network, a wrong FDC ID in
+        # a recipe); the logged request errors carry it.
+        print(
+            f"Error: no food resolved and {len(enrichment['lookup_failed'])} USDA lookups failed — "
+            "the errors above say why. No report written."
+        )
+        sys.exit(1)
 
     # 4. Analyze Micronutrient Intake
     print("Analyzing micronutrient intake...")
