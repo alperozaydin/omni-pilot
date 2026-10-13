@@ -751,3 +751,92 @@ class TestCustomFoods:
         entries = [{"date": "2026-08-09", "food_name": "Eggs", "total_weight_g": 100.0}]
         result = analyze(entries, enrichment({"Eggs": {"vitamin_k_mcg": 0.3}}), self.REF_RANGES)
         assert result["coverage"]["custom_recipes"] == []
+
+
+class TestLoggedFiber:
+    """MacroFactor's own fiber figure wins over USDA's when it is above zero."""
+
+    REF_RANGES = {
+        "demographic": {},
+        "nutrients": {
+            "fiber_g": {"name": "Fiber", "unit": "g", "type": "ai", "ai": 38},
+            "calcium_mg": {"name": "Calcium", "unit": "mg", "type": "rda", "rda": 1000},
+        },
+    }
+    # 200 g of bread: USDA says 2 g fiber per 100 g, so 4 g for the entry
+    BREAD = {"Brot": {"fiber_g": 2.0, "calcium_mg": 50.0}}
+
+    def _entry(self, food_name: str = "Brot", fiber_g: float | None = None, grams: float = 200.0) -> dict:
+        return {"date": "2026-10-04", "food_name": food_name, "total_weight_g": grams, "fiber_g": fiber_g}
+
+    def test_positive_logged_fiber_is_used_as_logged(self):
+        result = analyze([self._entry(fiber_g=7.5)], enrichment(self.BREAD), self.REF_RANGES)
+
+        # The logged figure is for the whole entry: not scaled by weight, not added to USDA's
+        assert result["nutrients"]["fiber_g"]["daily_avg"] == pytest.approx(7.5)
+
+    @pytest.mark.parametrize("logged", [None, 0.0])
+    def test_empty_or_zero_logged_fiber_falls_back_to_usda(self, logged):
+        result = analyze([self._entry(fiber_g=logged)], enrichment(self.BREAD), self.REF_RANGES)
+
+        assert result["nutrients"]["fiber_g"]["daily_avg"] == pytest.approx(4.0)
+
+    def test_logged_fiber_leaves_other_nutrients_on_usda(self):
+        result = analyze([self._entry(fiber_g=7.5)], enrichment(self.BREAD), self.REF_RANGES)
+
+        assert result["nutrients"]["calcium_mg"]["daily_avg"] == pytest.approx(100.0)
+
+    def test_logged_fiber_is_measured_when_usda_has_no_value(self):
+        profiles = {"Brot": {"fiber_g": None, "calcium_mg": 50.0}}
+
+        result = analyze([self._entry(fiber_g=3.0)], enrichment(profiles), self.REF_RANGES)
+
+        fiber = result["nutrients"]["fiber_g"]
+        assert fiber["daily_avg"] == pytest.approx(3.0)
+        assert fiber["coverage_pct"] == 100.0
+
+    def test_logged_fiber_replaces_every_part_of_a_custom_food(self):
+        custom = {"Salat": {
+            "recipe": "salat", "macro_distance": 0.1,
+            "parts": [
+                {"share": 0.75, "fdc_id": 1, "usda_name": "Tomatoes", "per_100g": {"fiber_g": 1.2}},
+                {"share": 0.25, "fdc_id": 2, "usda_name": "Mozzarella", "per_100g": {"fiber_g": None}},
+            ],
+        }}
+
+        result = analyze([self._entry("Salat", fiber_g=5.0)], enrichment(custom=custom), self.REF_RANGES)
+
+        fiber = result["nutrients"]["fiber_g"]
+        assert fiber["daily_avg"] == pytest.approx(5.0)
+        # The logged figure covers the whole entry, the part without a USDA value included
+        assert fiber["coverage_pct"] == 100.0
+
+    def test_skipped_food_keeps_its_logged_fiber_out(self):
+        entries = [self._entry(), self._entry("Flohsamen", fiber_g=9.0)]
+
+        result = analyze(entries, enrichment(self.BREAD, skipped={"Flohsamen"}), self.REF_RANGES)
+
+        assert result["nutrients"]["fiber_g"]["daily_avg"] == pytest.approx(4.0)
+
+    @pytest.mark.parametrize("unresolved", ["not_in_usda", "lookup_failed"])
+    def test_unresolved_food_stays_unmeasured_despite_logged_fiber(self, unresolved):
+        entries = [self._entry(), self._entry("Linsen", fiber_g=9.0)]
+
+        result = analyze(entries, enrichment(self.BREAD, **{unresolved: {"Linsen"}}), self.REF_RANGES)
+
+        fiber = result["nutrients"]["fiber_g"]
+        assert fiber["daily_avg"] == pytest.approx(4.0)
+        assert fiber["coverage_pct"] == 50.0
+
+    def test_reports_share_of_fiber_taken_from_logged_values(self):
+        # 6 g logged for one entry, 2 g from USDA (100 g at 2 g/100 g) for the other
+        entries = [self._entry(fiber_g=6.0), self._entry(grams=100.0)]
+
+        result = analyze(entries, enrichment(self.BREAD), self.REF_RANGES)
+
+        assert result["coverage"]["logged_fiber_pct"] == 75.0
+
+    def test_logged_fiber_share_is_none_without_any_fiber(self):
+        result = analyze([self._entry()], enrichment({"Brot": {"fiber_g": 0.0}}), self.REF_RANGES)
+
+        assert result["coverage"]["logged_fiber_pct"] is None

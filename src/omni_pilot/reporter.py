@@ -112,6 +112,14 @@ def _low_confidence_line(coverage: dict) -> str | None:
     return f"Low-confidence matches ({share:.0f}% of analysed weight): {', '.join(described)}"
 
 
+def _logged_fiber_line(coverage: dict) -> str | None:
+    """Say how much of the fiber total is MacroFactor's own figure, if any is."""
+    share = coverage["logged_fiber_pct"]
+    if not share:
+        return None
+    return f"Fiber: {share:.0f}% from MacroFactor's logged values, the rest from USDA"
+
+
 def _macro_check(distance: float | None, prefix: str = "") -> str:
     """How a custom food's recipe macros compare with the logged ones."""
     if distance is None:
@@ -223,6 +231,11 @@ def print_terminal_report(result: dict, settings: dict) -> None:
         )
         console.print()
 
+    logged_fiber_line = _logged_fiber_line(coverage)
+    if logged_fiber_line:
+        console.print(f"  {logged_fiber_line}", style="dim")
+        console.print()
+
     # Warnings
     if coverage["skipped_foods"]:
         foods_str = ", ".join(coverage["skipped_foods"])
@@ -331,6 +344,9 @@ HTML_TEMPLATE = """\
     {% if has_floor %}
     <p class="footnote">* computed from partial USDA data — the true value can only be higher</p>
     {% endif %}
+    {% if logged_fiber_line %}
+    <p class="footnote">{{ logged_fiber_line }}</p>
+    {% endif %}
     {% if skipped_foods or not_in_usda_line or lookup_failed_line or low_confidence_line %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
@@ -395,6 +411,7 @@ def generate_html_report(result: dict, output_path: str) -> None:
         not_in_usda_line=_not_in_usda_line(coverage),
         lookup_failed_line=_lookup_failed_line(coverage),
         low_confidence_line=_low_confidence_line(coverage),
+        logged_fiber_line=_logged_fiber_line(coverage),
         custom_recipes=[
             {
                 "recipe": recipe["recipe"],

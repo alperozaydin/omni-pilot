@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import openpyxl
 import pytest
 import yaml
 
@@ -35,6 +36,49 @@ class TestParseFoodLog:
         for entry in entries:
             assert entry["food_name"] is not None
             assert entry["food_name"] != ""
+
+
+def _write_food_log(path, rows: list[list]) -> str:
+    """Write a "Food Log" sheet in MacroFactor's column layout, one list per food row."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Food Log"
+    ws.append(["Date", "Time", "Food Name"])
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
+    return str(path)
+
+
+def _food_row(food_name: str, fiber: float | None = None, columns: int = 61) -> list:
+    """A food row as wide as a real export, with the fiber cell set (None leaves it empty)."""
+    row = ["2026-10-04", "12:00", food_name, "g", 100, 1, 50.0, 1.0, 10.0, 2.0] + [None] * (columns - 10)
+    if fiber is not None:
+        row[27] = fiber
+    return row
+
+
+class TestParseLoggedFiber:
+    def test_reads_logged_fiber(self, tmp_path):
+        path = _write_food_log(tmp_path / "export.xlsx", [_food_row("Himbeeren", fiber=8.1)])
+
+        assert parse_food_log(path)[0]["fiber_g"] == pytest.approx(8.1)
+
+    def test_empty_fiber_cell_is_none_not_zero(self, tmp_path):
+        """MacroFactor leaves the cell empty when it has no value; that is not a measured zero."""
+        path = _write_food_log(tmp_path / "export.xlsx", [_food_row("Pretzel")])
+
+        assert parse_food_log(path)[0]["fiber_g"] is None
+
+    def test_logged_zero_fiber_is_kept_as_zero(self, tmp_path):
+        path = _write_food_log(tmp_path / "export.xlsx", [_food_row("Honey", fiber=0.0)])
+
+        assert parse_food_log(path)[0]["fiber_g"] == 0.0
+
+    def test_export_without_fiber_column_has_no_logged_fiber(self, tmp_path):
+        path = _write_food_log(tmp_path / "export.xlsx", [_food_row("Reis", columns=10)])
+
+        assert parse_food_log(path)[0]["fiber_g"] is None
 
 
 class TestExtractUniqueFoods:
