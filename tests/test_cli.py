@@ -175,6 +175,42 @@ class TestCLIAnalyze:
 
         assert "1/3 foods resolved." in capsys.readouterr().out
 
+    def test_analyze_stops_without_report_when_every_lookup_failed(self, mocker, tmp_path, capsys):
+        """A run that could not ask USDA about any food must not render an all-deficient report."""
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Apfel": "apple", "Wasser": "skip"})
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Apfel"), food_entry("Wasser")])
+        mocker.patch(
+            "omni_pilot.cli.enrich_all_foods",
+            return_value=enrichment(skipped={"Wasser"}, lookup_failed={"Apfel"}),
+        )
+        mock_analyze = mocker.patch("omni_pilot.cli.analyze", return_value={})
+        mock_report = mocker.patch("omni_pilot.cli.print_terminal_report")
+        mock_html = mocker.patch("omni_pilot.cli.generate_html_report")
+        mocker.patch("sys.argv", [
+            "omni_pilot", "analyze", "data/MacroFactor-example.xlsx",
+            "--settings", settings_path, "--ref-ranges", ref_ranges_path, "--html",
+        ])
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        assert "Error: no food resolved and 1 USDA lookups failed" in capsys.readouterr().out
+        mock_analyze.assert_not_called()
+        mock_report.assert_not_called()
+        mock_html.assert_not_called()
+
+    def test_analyze_still_reports_when_no_food_resolved_but_no_lookup_failed(self, mocker, tmp_path):
+        """Nothing in USDA is an answer, not a failure: the report names those foods."""
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Apfel": "apple"})
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Apfel")])
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment(not_in_usda={"Apfel"}))
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        import omni_pilot.cli
+        omni_pilot.cli.print_terminal_report.assert_called_once()
+
     def test_analyze_resolves_db_and_mappings_from_settings(self, mocker, tmp_path):
         """Test custom database and mappings paths from settings."""
         custom_dir = tmp_path / "custom_dir"
