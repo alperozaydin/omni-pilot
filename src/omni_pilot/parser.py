@@ -23,6 +23,8 @@ class FoodEntry(TypedDict):
     protein_g: float
     fat_g: float
     carbs_g: float
+    # MacroFactor's own fiber figure for this entry; None when the cell is empty.
+    fiber_g: float | None
 
 
 # Column indices in the "Food Log" sheet (0-indexed)
@@ -36,6 +38,7 @@ _COL_CALORIES = 6
 _COL_FAT = 7
 _COL_CARBS = 8
 _COL_PROTEIN = 9
+_COL_FIBER = 27
 
 
 def parse_food_log(xlsx_path: str) -> list[FoodEntry]:
@@ -56,6 +59,7 @@ def parse_food_log(xlsx_path: str) -> list[FoodEntry]:
         serving_qty = float(row[_COL_SERVING_QTY] or 0)
         serving_weight_g = float(row[_COL_SERVING_WEIGHT_G] or 0)
         total_weight_g = serving_qty * serving_weight_g
+        logged_fiber = row[_COL_FIBER] if len(row) > _COL_FIBER else None
 
         if food_name == "Quick Add":
             logger.warning(
@@ -76,6 +80,7 @@ def parse_food_log(xlsx_path: str) -> list[FoodEntry]:
             protein_g=float(row[_COL_PROTEIN] or 0),
             fat_g=float(row[_COL_FAT] or 0),
             carbs_g=float(row[_COL_CARBS] or 0),
+            fiber_g=float(logged_fiber) if logged_fiber is not None else None,
         ))
 
     wb.close()

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from omni_pilot.reporter import generate_html_report, print_terminal_report
 
 
@@ -54,6 +56,7 @@ def _make_analysis_result() -> dict:
             "low_confidence_foods": [],
             "low_confidence_weight_pct": 0.0,
             "custom_recipes": [],
+            "logged_fiber_pct": None,
         },
     }
 
@@ -343,3 +346,34 @@ class TestMissingFoodWarnings:
             html = f.read()
         assert "Not in USDA" not in html
         assert "Lookup failed" not in html
+
+
+class TestLoggedFiberNote:
+    SETTINGS = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+    NOTE = "Fiber: 81% from MacroFactor's logged values, the rest from USDA"
+
+    def _result(self, logged_fiber_pct: float | None) -> dict:
+        result = _make_analysis_result()
+        result["coverage"]["logged_fiber_pct"] = logged_fiber_pct
+        return result
+
+    def test_terminal_says_how_much_fiber_came_from_macrofactor(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        print_terminal_report(self._result(80.6), self.SETTINGS)
+        assert self.NOTE in capsys.readouterr().out
+
+    def test_html_says_how_much_fiber_came_from_macrofactor(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(self._result(80.6), html_path)
+        with open(html_path) as f:
+            assert self.NOTE in f.read()
+
+    @pytest.mark.parametrize("logged_fiber_pct", [None, 0.0])
+    def test_note_is_omitted_when_no_fiber_came_from_macrofactor(self, logged_fiber_pct, capsys, tmp_path):
+        result = self._result(logged_fiber_pct)
+        print_terminal_report(result, self.SETTINGS)
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(result, html_path)
+        with open(html_path) as f:
+            assert "logged values" not in f.read()
+        assert "logged values" not in capsys.readouterr().out

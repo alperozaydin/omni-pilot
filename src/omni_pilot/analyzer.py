@@ -63,6 +63,9 @@ class CoverageResult(TypedDict):
     low_confidence_foods: list[LowConfidenceFood]
     low_confidence_weight_pct: float
     custom_recipes: list[CustomRecipeUse]
+    # Share of the food fiber total taken from MacroFactor's logged figures
+    # rather than USDA; None when no fiber was counted at all.
+    logged_fiber_pct: float | None
 
 
 class PeriodResult(TypedDict):
@@ -85,6 +88,9 @@ COMBINED_NUTRIENTS = {
     "phenylalanine_tyrosine_g": ["phenylalanine_g", "tyrosine_g"],
     "omega3_epa_dha_mg": ["omega3_epa_mg", "omega3_dha_mg"],
 }
+
+# The one nutrient taken from MacroFactor's own figure when the entry has one.
+LOGGED_NUTRIENT = "fiber_g"
 
 
 def _food_parts(
@@ -165,6 +171,11 @@ def analyze(
     books only its own share as unmeasured. A not-in-USDA or failed food is
     unmeasured for every nutrient, but only on a day that is counted: a day
     with no resolved food leaves the average entirely.
+
+    Fiber is the exception to "USDA per 100 g": an analysed entry whose
+    logged MacroFactor fiber is above zero counts that figure as it is, and
+    its whole weight as measured. An empty or zero cell is not trusted (the
+    export uses both for "unknown") and falls back to USDA.
     """
     total_entries = len(entries)
     mapped_entries = 0
@@ -187,6 +198,7 @@ def analyze(
     analysed_weight_g = 0.0
     low_confidence_weight_g: dict[str, float] = defaultdict(float)
     custom_weight_g: dict[str, float] = defaultdict(float)
+    logged_fiber_total_g = 0.0
     # Consumed grams of not-in-USDA and failed foods, per date and per kind
     unresolved_weight_by_date_g: dict[str, float] = defaultdict(float)
     not_in_usda_weight_g = 0.0
@@ -226,9 +238,19 @@ def analyze(
         if total_weight_g > 0 and food_name in enrichment["custom"]:
             custom_weight_g[food_name] += total_weight_g
 
+        logged_fiber_g = entry.get("fiber_g") or 0.0
+        uses_logged_fiber = logged_fiber_g > 0 and LOGGED_NUTRIENT in ref_ranges["nutrients"]
+        if uses_logged_fiber:
+            # Already the figure for the whole entry: not scaled by weight.
+            measured_weight_g[LOGGED_NUTRIENT] += total_weight_g
+            daily_totals[entry_date][LOGGED_NUTRIENT] += logged_fiber_g
+            logged_fiber_total_g += logged_fiber_g
+
         for share, food_micros in parts:
             part_weight_g = total_weight_g * share
             for nutrient_key in nutrient_keys:
+                if uses_logged_fiber and nutrient_key == LOGGED_NUTRIENT:
+                    continue
                 component_keys = COMBINED_NUTRIENTS.get(nutrient_key, [nutrient_key])
                 component_values = [food_micros.get(ck) for ck in component_keys]
 
@@ -326,6 +348,10 @@ def analyze(
         if analysed_weight_g > 0 else 0.0
     )
     food_weight_g = analysed_weight_g + not_in_usda_weight_g + lookup_failed_weight_g
+    food_fiber_total_g = sum(daily_totals[d].get(LOGGED_NUTRIENT, 0.0) for d in sorted_dates)
+    logged_fiber_pct = (
+        round(100.0 * logged_fiber_total_g / food_fiber_total_g, 1) if food_fiber_total_g > 0 else None
+    )
 
     def food_weight_pct(grams: float) -> float:
         return round(100.0 * grams / food_weight_g, 1) if food_weight_g > 0 else 0.0
@@ -351,5 +377,6 @@ def analyze(
             low_confidence_foods=low_confidence_foods,
             low_confidence_weight_pct=low_confidence_weight_pct,
             custom_recipes=_custom_recipe_uses(enrichment["custom"], custom_weight_g),
+            logged_fiber_pct=logged_fiber_pct,
         ),
     )
