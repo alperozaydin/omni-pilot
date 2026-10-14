@@ -9,7 +9,7 @@ from omni_pilot.reporter import generate_html_report, print_terminal_report
 
 def _make_analysis_result() -> dict:
     return {
-        "period": {"start": "2026-07-13", "end": "2026-08-09", "days": 21},
+        "period": {"start": "2026-07-13", "end": "2026-08-09", "days": 21, "left_out_day": None},
         "nutrients": {
             "vitamin_a_mcg": {
                 "name": "Vitamin A", "unit": "mcg",
@@ -377,3 +377,33 @@ class TestLoggedFiberNote:
         with open(html_path) as f:
             assert "logged values" not in f.read()
         assert "logged values" not in capsys.readouterr().out
+
+
+LEFT_OUT_DAY = {"date": "2026-08-10", "logged_kcal": 1196.0, "expenditure_kcal": 2570.0, "partial": True}
+
+
+class TestLeftOutDay:
+    def test_html_names_the_left_out_day_in_the_header(self, tmp_path):
+        result = _make_analysis_result()
+        result["period"]["left_out_day"] = LEFT_OUT_DAY
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(result, html_path)
+        html = open(html_path).read()
+        header = html[html.index('<div class="header">'):html.index('<div class="summary">')]
+        assert "2026-08-10 left out" in header
+        assert "1196 of 2570 kcal" in header
+
+    def test_html_says_nothing_when_no_day_was_left_out(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(_make_analysis_result(), html_path)
+        assert "left out" not in open(html_path).read()
+
+    def test_terminal_names_the_left_out_day(self, capsys):
+        result = _make_analysis_result()
+        result["period"]["left_out_day"] = LEFT_OUT_DAY
+        print_terminal_report(result, {})
+        assert "2026-08-10 left out" in capsys.readouterr().out
+
+    def test_terminal_says_nothing_when_no_day_was_left_out(self, capsys):
+        print_terminal_report(_make_analysis_result(), {})
+        assert "left out" not in capsys.readouterr().out

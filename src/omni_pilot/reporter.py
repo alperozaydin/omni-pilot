@@ -112,6 +112,17 @@ def _low_confidence_line(coverage: dict) -> str | None:
     return f"Low-confidence matches ({share:.0f}% of analysed weight): {', '.join(described)}"
 
 
+def _left_out_day_line(period: dict) -> str | None:
+    """Name the export's last day when it was left out as only partly logged."""
+    day = period["left_out_day"]
+    if day is None:
+        return None
+    return (
+        f"{day['date']} left out: only {day['logged_kcal']:.0f} of {day['expenditure_kcal']:.0f} kcal "
+        "logged, under half the day's expenditure, so it looks partly logged"
+    )
+
+
 def _logged_fiber_line(coverage: dict) -> str | None:
     """Say how much of the fiber total is MacroFactor's own figure, if any is."""
     share = coverage["logged_fiber_pct"]
@@ -159,6 +170,9 @@ def print_terminal_report(result: dict, settings: dict) -> None:
     header_text.append(
         f"Period: {period['start']} → {period['end']} ({period['days']} days)"
     )
+    left_out_line = _left_out_day_line(period)
+    if left_out_line:
+        header_text.append(f"\n{left_out_line}", style="yellow")
     console.print(Panel(header_text, expand=True))
     console.print()
 
@@ -275,6 +289,7 @@ HTML_TEMPLATE = """\
         }
         .header h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
         .header .period { color: #8892b0; }
+        .header .left-out { color: #ffd93d; margin-top: 0.5rem; font-size: 0.9rem; }
         .summary { text-align: center; margin-bottom: 1rem; color: #ccd6f6; }
         .coverage { text-align: center; margin-bottom: 2rem; color: #8892b0; font-size: 0.9rem; }
         .category { margin-bottom: 2rem; }
@@ -305,6 +320,7 @@ HTML_TEMPLATE = """\
     <div class="header">
         <h1>Micronutrient Analysis Report</h1>
         <div class="period">{{ period.start }} → {{ period.end }} ({{ period.days }} days)</div>
+        {% if left_out_day_line %}<div class="left-out">{{ left_out_day_line }}</div>{% endif %}
     </div>
     <div class="summary">{{ summary }}</div>
     <div class="coverage">{{ coverage_line }}</div>
@@ -403,6 +419,7 @@ def generate_html_report(result: dict, output_path: str) -> None:
     template = Template(HTML_TEMPLATE)
     html = template.render(
         period=result["period"],
+        left_out_day_line=_left_out_day_line(result["period"]),
         summary=_summary_line(nutrients),
         coverage_line=_coverage_line(coverage),
         categories=categories,

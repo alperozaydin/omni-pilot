@@ -7,6 +7,7 @@ from typing import TypedDict
 
 from omni_pilot.config import get_nutrient_target
 from omni_pilot.enricher import EnrichmentResult
+from omni_pilot.parser import LastDayCheck
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,8 @@ class PeriodResult(TypedDict):
     start: str
     end: str
     days: int
+    # The export's last day, left out of the analysis as only partly logged; None when all days count.
+    left_out_day: LastDayCheck | None
 
 
 class AnalysisResult(TypedDict):
@@ -155,6 +158,8 @@ def analyze(
     enrichment: EnrichmentResult,
     ref_ranges: dict,
     supplements: dict | None = None,
+    *,
+    left_out_day: LastDayCheck | None = None,
 ) -> AnalysisResult:
     """Run the full micronutrient analysis.
 
@@ -361,6 +366,7 @@ def analyze(
             start=sorted_dates[0] if sorted_dates else "",
             end=sorted_dates[-1] if sorted_dates else "",
             days=num_days,
+            left_out_day=left_out_day,
         ),
         nutrients=nutrients_result,
         coverage=CoverageResult(

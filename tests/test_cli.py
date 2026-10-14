@@ -314,14 +314,16 @@ class TestCLIAnalyze:
             yaml.dump({"nutrients": {}}, f)
         return db_path, settings_path, ref_ranges_path
 
-    def _run(self, mocker, settings_path: str, ref_ranges_path: str) -> None:
-        mocker.patch("omni_pilot.cli.analyze", return_value={})
+    def _run(self, mocker, settings_path: str, ref_ranges_path: str):
+        """Run analyze with the analysis and report mocked; returns the analyze mock."""
+        mock_analyze = mocker.patch("omni_pilot.cli.analyze", return_value={})
         mocker.patch("omni_pilot.cli.print_terminal_report")
         mocker.patch("sys.argv", [
             "omni_pilot", "analyze", "data/MacroFactor-example.xlsx",
             "--settings", settings_path, "--ref-ranges", ref_ranges_path,
         ])
         main()
+        return mock_analyze
 
     def test_analyze_passes_logged_macros_to_enrichment(self, mocker, tmp_path):
         _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
@@ -433,3 +435,50 @@ class TestCLIAnalyze:
         self._run(mocker, settings_path, ref_ranges_path)
 
         assert "2/2 foods resolved." in capsys.readouterr().out
+
+    def test_analyze_leaves_out_a_partly_logged_last_day(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked", "Milch": "milk"})
+        full_day = food_entry("Reis", date="2026-08-08", calories_kcal=2500.0)
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[
+            full_day, food_entry("Milch", date="2026-08-09", calories_kcal=1196.0),
+        ])
+        mocker.patch("omni_pilot.cli.parse_daily_expenditure", return_value={"2026-08-09": 2570.0})
+        mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Reis": {}}))
+
+        mock_analyze = self._run(mocker, settings_path, ref_ranges_path)
+
+        assert mock_analyze.call_args.args[0] == [full_day]
+        assert mock_enrich.call_args.args[0] == ["Reis"]
+        assert mock_analyze.call_args.kwargs["left_out_day"] == {
+            "date": "2026-08-09", "logged_kcal": 1196.0, "expenditure_kcal": 2570.0, "partial": True,
+        }
+
+    def test_analyze_counts_a_fully_logged_last_day(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        entries = [
+            food_entry("Reis", date="2026-08-08", calories_kcal=2500.0),
+            food_entry("Reis", date="2026-08-09", calories_kcal=1300.0),
+        ]
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=entries)
+        mocker.patch("omni_pilot.cli.parse_daily_expenditure", return_value={"2026-08-09": 2570.0})
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Reis": {}}))
+
+        mock_analyze = self._run(mocker, settings_path, ref_ranges_path)
+
+        assert mock_analyze.call_args.args[0] == entries
+        assert mock_analyze.call_args.kwargs["left_out_day"] is None
+
+    def test_analyze_counts_last_day_without_expenditure_and_says_so(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        entries = [
+            food_entry("Reis", date="2026-08-08", calories_kcal=2500.0),
+            food_entry("Reis", date="2026-08-09", calories_kcal=300.0),
+        ]
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=entries)
+        mocker.patch("omni_pilot.cli.parse_daily_expenditure", return_value={})
+        mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment({"Reis": {}}))
+
+        mock_analyze = self._run(mocker, settings_path, ref_ranges_path)
+
+        assert mock_analyze.call_args.args[0] == entries
+        assert "No expenditure for 2026-08-09" in capsys.readouterr().out
