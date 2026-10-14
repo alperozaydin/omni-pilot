@@ -21,7 +21,7 @@ from omni_pilot.custom_foods import CustomFoodsError, load_custom_foods
 from omni_pilot.enricher import count_outdated_matches, enrich_all_foods
 from omni_pilot.matcher import logged_macros_per_100g
 from omni_pilot.net import prefer_ipv4_connections
-from omni_pilot.parser import extract_unique_foods, parse_food_log
+from omni_pilot.parser import check_last_day, extract_unique_foods, parse_daily_expenditure, parse_food_log
 from omni_pilot.reporter import generate_html_report, print_terminal_report
 from omni_pilot.translator import resolve_and_sync_mappings
 
@@ -77,6 +77,13 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     print(f"Parsing {xlsx_path}...")
     entries = parse_food_log(xlsx_path)
     print(f"  Found {len(entries)} food entries.")
+    last_day = check_last_day(entries, parse_daily_expenditure(xlsx_path))
+    if last_day and last_day["partial"]:
+        # A mid-day export would pull every average down with a half-logged day (BAR-87).
+        # The report names the day; see reporter._left_out_day_line.
+        entries = [e for e in entries if e["date"] != last_day["date"]]
+    elif last_day and last_day["expenditure_kcal"] is None:
+        print(f"  No expenditure for {last_day['date']} in the export; counting it as a full day.")
     food_names = extract_unique_foods(entries)
     print(f"  Found {len(food_names)} unique foods.")
 
@@ -108,7 +115,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     # 4. Analyze Micronutrient Intake
     print("Analyzing micronutrient intake...")
-    result = analyze(entries, enrichment, ref_ranges, supplements=supplements)
+    left_out_day = last_day if last_day and last_day["partial"] else None
+    result = analyze(entries, enrichment, ref_ranges, supplements=supplements, left_out_day=left_out_day)
 
     # 5. Report
     print()

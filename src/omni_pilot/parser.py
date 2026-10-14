@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import defaultdict
+from datetime import date, datetime
 from typing import TypedDict
 
 import openpyxl
@@ -25,6 +27,19 @@ class FoodEntry(TypedDict):
     carbs_g: float
     # MacroFactor's own fiber figure for this entry; None when the cell is empty.
     fiber_g: float | None
+
+
+class LastDayCheck(TypedDict):
+    date: str
+    logged_kcal: float
+    # The day's MacroFactor expenditure (TDEE); None when the export has none for it.
+    expenditure_kcal: float | None
+    # Logged under PARTIAL_DAY_SHARE of the expenditure: the day was still being logged.
+    partial: bool
+
+
+# A last day logged under this share of its expenditure is taken as still in progress.
+PARTIAL_DAY_SHARE = 0.5
 
 
 # Column indices in the "Food Log" sheet (0-indexed)
@@ -85,6 +100,65 @@ def parse_food_log(xlsx_path: str) -> list[FoodEntry]:
 
     wb.close()
     return entries
+
+
+def parse_daily_expenditure(xlsx_path: str) -> dict[str, float]:
+    """Read each day's calorie expenditure from the "Quick Export" sheet, keyed by ISO date.
+
+    Uses Expenditure (MacroFactor's TDEE estimate), falling back to Target Calories;
+    a day with neither is left out. An export without the sheet gives an empty dict.
+    """
+    wb = openpyxl.load_workbook(xlsx_path, read_only=True)
+    try:
+        if "Quick Export" not in wb.sheetnames:
+            return {}
+        rows = wb["Quick Export"].iter_rows(values_only=True)
+        header = [str(cell or "").strip() for cell in next(rows, ())]
+        if "Date" not in header:
+            return {}
+        col_date = header.index("Date")
+        cols_kcal = [header.index(name) for name in ("Expenditure", "Target Calories (kcal)") if name in header]
+
+        expenditure: dict[str, float] = {}
+        for row in rows:
+            day = row[col_date] if len(row) > col_date else None
+            if day is None:
+                continue
+            day_iso = day.date().isoformat() if isinstance(day, datetime) else (
+                day.isoformat() if isinstance(day, date) else str(day)[:10]
+            )
+            for col in cols_kcal:
+                if len(row) > col and row[col]:
+                    expenditure[day_iso] = float(row[col])
+                    break
+        return expenditure
+    finally:
+        wb.close()
+
+
+def check_last_day(entries: list[FoodEntry], daily_expenditure: dict[str, float]) -> LastDayCheck | None:
+    """Check whether the export's last day was logged only in part (BAR-87).
+
+    An export taken mid-day holds a half-logged last day that would pull every
+    average down. That day is partial when its logged calories (every entry,
+    Quick Add included) stay under PARTIAL_DAY_SHARE of its expenditure. Without
+    an expenditure figure the day counts. Returns None when there are fewer than
+    two days, since leaving out the only day would leave nothing to analyse.
+    """
+    logged_kcal: dict[str, float] = defaultdict(float)
+    for entry in entries:
+        logged_kcal[entry["date"]] += entry["calories_kcal"]
+    if len(logged_kcal) < 2:
+        return None
+
+    last_day = max(logged_kcal)
+    expenditure = daily_expenditure.get(last_day)
+    return LastDayCheck(
+        date=last_day,
+        logged_kcal=logged_kcal[last_day],
+        expenditure_kcal=expenditure,
+        partial=expenditure is not None and logged_kcal[last_day] < PARTIAL_DAY_SHARE * expenditure,
+    )
 
 
 def extract_unique_foods(entries: list[FoodEntry]) -> list[str]:
