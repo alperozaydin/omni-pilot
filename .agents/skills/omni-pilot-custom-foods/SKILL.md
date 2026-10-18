@@ -20,12 +20,14 @@ the repo: `config/custom_foods.example.yaml` and `src/omni_pilot/custom_foods.py
 ## The tool
 
 `scripts/recipe_tool.py` (next to this file) uses the app's own loader, USDA
-client and macro check, and never writes to the database. Run it from the
-omni-pilot repo root:
+client and macro check. Only `approve` writes to the database, and only the
+review mark. Run it from the omni-pilot repo root:
 
 ```bash
 T=<this skill's directory>/scripts/recipe_tool.py
-PYTHONPATH=src uv run python $T review                  # every food and its match (check-up)
+PYTHONPATH=src uv run python $T review                  # matches not yet approved, every other food (check-up)
+PYTHONPATH=src uv run python $T review --all            # same, including approved matches
+PYTHONPATH=src uv run python $T approve "Boiled Eggs"   # mark matches you read and found right
 PYTHONPATH=src uv run python $T flagged                 # weak matches not yet in a recipe
 PYTHONPATH=src uv run python $T search feta cheese      # find ingredient IDs
 PYTHONPATH=src uv run python $T food 169249 170457      # inspect IDs, list missing nutrients
@@ -59,6 +61,26 @@ read every entry, and list for the user, heaviest first:
 - **US-fortified match:** a German rice, bread or milk matched to an
   "enriched" or "with added vitamin A and vitamin D" entry.
 - **Custom foods marked ⚠** in `check`.
+
+`review` hides matches already approved, so a check-up reads only foods that
+are new or whose match the app has changed since it was approved (shown with
+"approved before as FDC …"). For each food you read:
+
+| Verdict | Do | Result |
+|---|---|---|
+| The match is the same food, in the same form | `approve` it | Hidden until the app changes the match |
+| The match is wrong and fixable | A recipe that passes `check` (within 25%) | In a recipe; no mark needed |
+| Cannot be settled: impossible logged macros, no plausible recipe within 25%, or the name does not say what the food is | Nothing | Listed for the user; shown again next time |
+
+- Approve only when the name and the match are clearly the same food. When
+  unsure, leave it unmarked. Never approve a food to shorten the list.
+- Approve all right matches in one call: `approve "Food A" "Food B" ...`. If any
+  name is refused, nothing is written; fix the list and run it again.
+- `approve` refuses weak matches, foods in a recipe, skipped foods and foods
+  not in USDA: those need a recipe or the user, not a mark.
+- If the user says a listed match is fine, approve it.
+- Report approvals as a count ("approved 97 matches") and mention that
+  `review --all` shows them.
 
 Foods with "not in any export" were logged in older exports only; mention
 them separately and lower. Give the list first, then fix the ones the user picks
