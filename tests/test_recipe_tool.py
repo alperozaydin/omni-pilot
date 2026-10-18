@@ -217,3 +217,47 @@ class TestApprove:
         assert reason in out
         assert "Nothing approved." in out
         assert all("reviewed_fdc_id" not in e for e in ws.entries().values())
+
+
+class TestReview:
+    def test_hides_approved_matches_and_counts_both_sides(self, ws, run):
+        ws.add({**EGGS, "reviewed_fdc_id": 173424}, MELON)
+
+        code, out = run("review")
+
+        assert code == 0
+        assert "== Searched in USDA (1 to review, 1 approved): is each match the same food?" in out
+        assert "Watermelon, Fresh" in out
+        assert "Boiled Eggs" not in out
+
+    def test_lists_a_changed_match_with_the_approved_id(self, ws, run):
+        ws.add({**EGGS, "usda_fdc_id": 172187, "usda_name": "Egg, whole, raw, fresh", "reviewed_fdc_id": 173424})
+
+        code, out = run("review")
+
+        assert code == 0
+        assert "(1 to review, 0 approved)" in out
+        assert "Boiled Eggs" in out
+        assert "approved before as FDC 173424; the match has changed since" in out
+
+    def test_all_lists_approved_matches_marked(self, ws, run):
+        ws.add({**EGGS, "reviewed_fdc_id": 173424}, MELON)
+
+        code, out = run("review", "--all")
+
+        assert code == 0
+        assert "(1 to review, 1 approved)" in out
+        assert "matched to  : Egg, whole, cooked, hard-boiled  [good, off 5%]  (approved)" in out
+        assert "matched to  : Watermelon, raw  [good, off 5%]\n" in out
+
+    def test_flagged_ignores_review_marks(self, ws, run):
+        weak = _entry("Risotto Alla Milanese", 168943, "Rice and vermicelli mix",
+                      confidence="weak", macro_distance=0.34)
+        ws.add(weak, EGGS)
+        _, before = run("flagged")
+        run("approve", "Boiled Eggs")
+
+        _, after = run("flagged")
+
+        assert "Risotto Alla Milanese" in before
+        assert after == before
