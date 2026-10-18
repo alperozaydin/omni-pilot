@@ -2,7 +2,7 @@
 
 **Document Version:** 1.0
 **Date:** 2026-10-11
-**Status:** In Review
+**Status:** Approved (2026-10-18)
 **Linear Issue:** [BAR-82](https://linear.app/knaak/issue/BAR-82/review-mark-for-usda-matches-in-the-custom-foods-skill)
 **Part of:** [BAR-81](https://linear.app/knaak/issue/BAR-81/automate-the-custom-food-skill) (automate the custom food skill). BAR-84 (the daily routine) builds on this.
 **Builds on:** BAR-72 (versioned USDA cache, `match_version`), BAR-79 (not-found records, the skill's `review` groups)
