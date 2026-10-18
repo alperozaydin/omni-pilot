@@ -3,7 +3,6 @@
   "skills": {
     "omni-pilot-custom-foods": {
       "source": "alperozaydin/my-skills",
-      "ref": "alozay/bar-82-review-mark",
       "sourceType": "github",
       "skillPath": "skills/omni-pilot-custom-foods/SKILL.md",
       "computedHash": "a9f0bda29714176585b4522c6a7c0a73fd6735285e127bc859892d4f8be99cf9"
