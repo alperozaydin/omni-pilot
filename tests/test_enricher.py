@@ -399,6 +399,21 @@ class TestGetFoodMatch:
         assert entry["match_version"] == MATCH_VERSION
         assert entry["usda_name"] == "Egg, whole, cooked, hard-boiled"
 
+    def test_repick_keeps_fields_the_app_does_not_write(self, mocker, tmp_path):
+        # The custom-foods skill stores reviewed_fdc_id on these entries (BAR-82).
+        # A re-pick must update the entry in place, or every review mark is lost.
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert({**self._legacy_entry(), "usda_fdc_id": 2, "reviewed_fdc_id": 2})
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([
+            _candidate(3, "Egg, whole, cooked, hard-boiled", 12.6, 10.6, 1.1),
+        ], True))
+
+        get_food_match("Boiled Eggs", "egg, whole, cooked, hard-boiled", EGG_LOGGED, db, "fake-key")
+
+        [entry] = db.all()
+        assert entry["usda_fdc_id"] == 3
+        assert entry["reviewed_fdc_id"] == 2
+
     @pytest.mark.parametrize("complete", [True, False], ids=["not-in-usda", "lookup-failed"])
     def test_failed_repick_keeps_legacy_entry_as_unverified(self, mocker, tmp_path, complete):
         db = TinyDB(str(tmp_path / "test_db.json"))

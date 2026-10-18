@@ -5,14 +5,17 @@ Run from the omni-pilot repo root, where config/settings.yaml lives:
     PYTHONPATH=src uv run python <skill-dir>/scripts/recipe_tool.py <command> ...
 
 Commands:
-    review           every logged food and what the app matched it to, for a check-up
+    review [--all]   every logged food and what the app matched it to, for a check-up;
+                     approved matches are hidden unless --all is given
     flagged          foods weakly matched by USDA search and not yet in a recipe
     search QUERY     USDA search hits (SR Legacy / Foundation) with macros and coverage
     food ID [ID...]  one or more USDA foods by FDC ID, with the nutrients they lack
     check [FILE]     validate a recipe file with the app's own loader and run the
                      app's macro check against every logged export
+    approve NAME...  mark each food's USDA match as read and right (the review mark)
 
-Everything is read-only: the food database is opened read-only and ingredients
+Every command is read-only except `approve`, which writes only the review mark
+(`reviewed_fdc_id`) and writes nothing when any name is refused. Ingredients
 fetched here are not cached, so the app still fetches and caches them itself.
 """
 from __future__ import annotations
@@ -23,7 +26,7 @@ import logging
 import os
 import sys
 
-from tinydb import TinyDB
+from tinydb import Query, TinyDB
 
 from omni_pilot.cli import DEFAULT_CUSTOM_FOODS, DEFAULT_DB, DEFAULT_MAPPINGS, DEFAULT_SETTINGS
 from omni_pilot.config import load_food_mappings, load_settings, resolve_path
@@ -41,6 +44,16 @@ from omni_pilot.matcher import GOOD_DISTANCE, LoggedMacros, logged_macros_per_10
 from omni_pilot.parser import parse_food_log
 
 N_NUTRIENTS = len(USDA_NUTRIENT_MAP)
+REVIEWED = "reviewed_fdc_id"  # the USDA ID a reviewer judged to be the logged food
+
+
+def _is_approved(entry: dict) -> bool:
+    """Whether the entry's current match is the one that was approved, and still fits the logged macros."""
+    return (
+        entry.get(REVIEWED) is not None
+        and entry.get(REVIEWED) == entry.get("usda_fdc_id")
+        and entry.get("confidence") != "weak"
+    )
 
 
 def _settings() -> dict:
@@ -50,6 +63,13 @@ def _settings() -> dict:
 def _open_db(settings: dict) -> TinyDB | None:
     path = resolve_path("database_path", DEFAULT_DB, settings)
     return TinyDB(path, access_mode="r") if os.path.exists(path) else None
+
+
+def _mappings(settings: dict, db: TinyDB) -> dict[str, str]:
+    """Each food's lookup text: food_mappings.yaml, overridden by the database's translations, as in the app."""
+    mappings = load_food_mappings(resolve_path("mappings_path", DEFAULT_MAPPINGS, settings))
+    mappings.update({e["german"]: e["english"] for e in db.table("translations")})
+    return mappings
 
 
 def _export_paths(settings: dict, extra: list[str]) -> list[str]:
@@ -149,8 +169,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     if db is None:
         sys.exit("No food database found.")
     custom = load_custom_foods(resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings))
-    mappings = load_food_mappings(resolve_path("mappings_path", DEFAULT_MAPPINGS, settings))
-    mappings.update({e["german"]: e["english"] for e in db.table("translations")})  # the DB wins, as in the app
+    mappings = _mappings(settings, db)
     matches = {e["original_name"]: e for e in db.all()}
     logged, grams = _logged(settings, args.exports)
 
@@ -181,14 +200,23 @@ def cmd_review(args: argparse.Namespace) -> None:
             line += "  !! IMPOSSIBLE LOGGED MACROS"
         return line
 
-    print(f"== Searched in USDA ({len(groups['searched'])}): is each match the same food?")
+    approved = [name for name in groups["searched"] if _is_approved(matches[name])]
+    print(f"== Searched in USDA ({len(groups['searched']) - len(approved)} to review, {len(approved)} approved):"
+          " is each match the same food?")
     for name in groups["searched"]:
         e = matches[name]
+        is_approved = name in approved
+        if is_approved and not args.all:
+            continue
         distance = e.get("macro_distance")
         off = "" if distance is None else f", off {distance:.0%}"
         print(header(name))
         print(f"    looked up as: {e.get('usda_query')}")
-        print(f"    matched to  : {e.get('usda_name')}  [{e.get('confidence', '?')}{off}]")
+        print(f"    matched to  : {e.get('usda_name')}  [{e.get('confidence', '?')}{off}]"
+              + ("  (approved)" if is_approved else ""))
+        if e.get(REVIEWED) is not None and not is_approved:
+            reason = "the match is now weak" if e[REVIEWED] == e.get("usda_fdc_id") else "the match has changed since"
+            print(f"    approved before as FDC {e[REVIEWED]}; {reason}")
     if groups["not in usda"]:
         print(f"\n== Not in USDA ({len(groups['not in usda'])}): give them a recipe")
         for name in groups["not in usda"]:
@@ -288,13 +316,65 @@ def cmd_check(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _approval_problem(name: str, entry: dict | None, custom: dict, mappings: dict[str, str]) -> str | None:
+    """Why a food's match cannot be approved, or None if it can."""
+    if name in custom["by_food"]:
+        return f"is in recipe {custom['by_food'][name]}; recipes need no approval"
+    if mappings.get(name, "").strip().lower() == "skip":
+        return "is mapped to skip and not counted"
+    if entry is None:
+        return "is not a searched food; check the spelling against `review`"
+    if entry.get("not_found"):
+        return "has no USDA match; it needs a recipe"
+    if entry.get("confidence") == "weak":
+        distance = entry.get("macro_distance")
+        off = "?" if distance is None else f"{distance:.0%}"
+        return f"is a weak match (macros off {off}); give it a recipe or leave it for the user"
+    if entry.get("usda_fdc_id") is None:
+        return "has no USDA ID yet; run analyze first"
+    return None
+
+
+def cmd_approve(args: argparse.Namespace) -> None:
+    """Mark each named food's current USDA match as read and right. All names or none."""
+    settings = _settings()
+    path = resolve_path("database_path", DEFAULT_DB, settings)
+    if not os.path.exists(path):
+        sys.exit("No food database found.")
+    custom = load_custom_foods(resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings))
+    names = list(dict.fromkeys(args.foods))
+    with TinyDB(path) as db:
+        mappings = _mappings(settings, db)
+        matches = {e["original_name"]: e for e in db.all()}
+        problems = [
+            f"✗ {name}: {problem}" for name in names
+            if (problem := _approval_problem(name, matches.get(name), custom, mappings))
+        ]
+        if problems:
+            print("\n".join(problems))
+            print("Nothing approved.")
+            sys.exit(1)
+        approved = 0
+        for name in names:
+            entry = matches[name]
+            match = f"{name} → {entry['usda_name']} ({entry['usda_fdc_id']})"
+            if _is_approved(entry):
+                print(f"already approved  {match}")
+                continue
+            db.update({REVIEWED: entry["usda_fdc_id"]}, Query().original_name == name)
+            print(f"approved  {match}")
+            approved += 1
+    print(f"{approved} approved")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     exports_help = "extra MacroFactor export globs for logged macros"
 
-    p = sub.add_parser("review", help="every food and its match, for a check-up")
+    p = sub.add_parser("review", help="foods and their matches not yet approved, for a check-up")
     p.add_argument("--exports", nargs="*", default=[], help=exports_help)
+    p.add_argument("--all", action="store_true", help="also list matches already approved")
     p.set_defaults(func=cmd_review)
 
     p = sub.add_parser("flagged", help="weak USDA matches not yet in a recipe")
@@ -314,6 +394,10 @@ def main() -> None:
     p.add_argument("file", nargs="?", help="recipe file (default: custom_foods_path)")
     p.add_argument("--exports", nargs="*", default=[], help=exports_help)
     p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("approve", help="mark foods whose USDA match was read and is the right food")
+    p.add_argument("foods", nargs="+", help="food names exactly as logged")
+    p.set_defaults(func=cmd_approve)
 
     args = parser.parse_args()
     args.func(args)
