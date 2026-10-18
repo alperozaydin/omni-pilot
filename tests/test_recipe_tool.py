@@ -261,3 +261,13 @@ class TestReview:
 
         assert "Risotto Alla Milanese" in before
         assert after == before
+
+    def test_lists_an_approved_match_that_turned_weak(self, ws, run):
+        # Same USDA food, but a re-pick now scores it weak: it needs a recipe or the user again.
+        ws.add({**EGGS, "confidence": "weak", "macro_distance": 0.34, "reviewed_fdc_id": 173424})
+
+        code, out = run("review")
+
+        assert code == 0
+        assert "(1 to review, 0 approved)" in out
+        assert "approved before as FDC 173424; the match is now weak" in out

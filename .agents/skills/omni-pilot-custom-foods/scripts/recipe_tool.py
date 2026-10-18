@@ -48,8 +48,12 @@ REVIEWED = "reviewed_fdc_id"  # the USDA ID a reviewer judged to be the logged f
 
 
 def _is_approved(entry: dict) -> bool:
-    """Whether the entry's current match is the one that was approved."""
-    return entry.get(REVIEWED) is not None and entry.get(REVIEWED) == entry.get("usda_fdc_id")
+    """Whether the entry's current match is the one that was approved, and still fits the logged macros."""
+    return (
+        entry.get(REVIEWED) is not None
+        and entry.get(REVIEWED) == entry.get("usda_fdc_id")
+        and entry.get("confidence") != "weak"
+    )
 
 
 def _settings() -> dict:
@@ -211,7 +215,8 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(f"    matched to  : {e.get('usda_name')}  [{e.get('confidence', '?')}{off}]"
               + ("  (approved)" if is_approved else ""))
         if e.get(REVIEWED) is not None and not is_approved:
-            print(f"    approved before as FDC {e[REVIEWED]}; the match has changed since")
+            reason = "the match is now weak" if e[REVIEWED] == e.get("usda_fdc_id") else "the match has changed since"
+            print(f"    approved before as FDC {e[REVIEWED]}; {reason}")
     if groups["not in usda"]:
         print(f"\n== Not in USDA ({len(groups['not in usda'])}): give them a recipe")
         for name in groups["not in usda"]:
