@@ -75,6 +75,7 @@ class TestAnalyze:
         result = analyze(entries, enrichment(enriched), ref_ranges)
 
         assert result["period"]["days"] == 2
+        assert result["period"]["left_out_day"] is None
         # 200g of eggs per day -> 149 * (200/100) = 298 mcg vitamin A per day
         # Average over 2 days = 298
         vit_a = result["nutrients"]["vitamin_a_mcg"]
@@ -840,3 +841,11 @@ class TestLoggedFiber:
         result = analyze([self._entry()], enrichment({"Brot": {"fiber_g": 0.0}}), self.REF_RANGES)
 
         assert result["coverage"]["logged_fiber_pct"] is None
+
+
+class TestLeftOutDay:
+    def test_left_out_day_is_kept_in_the_period(self):
+        left_out = {"date": "2026-08-09", "logged_kcal": 1196.0, "expenditure_kcal": 2570.0, "partial": True}
+        entries = [{"date": "2026-08-08", "time": "12:00", "food_name": "Eggs", "total_weight_g": 100.0}]
+        result = analyze(entries, enrichment({"Eggs": {}}), {"nutrients": {}}, left_out_day=left_out)
+        assert result["period"]["left_out_day"] == left_out

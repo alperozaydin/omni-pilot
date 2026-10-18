@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import openpyxl
 import pytest
 import yaml
 
-from omni_pilot.parser import extract_unique_foods, generate_food_mappings, parse_food_log
+from omni_pilot.parser import (
+    check_last_day,
+    extract_unique_foods,
+    generate_food_mappings,
+    parse_daily_expenditure,
+    parse_food_log,
+)
+from tests.helpers import food_entry
 
 
 class TestParseFoodLog:
@@ -141,3 +150,79 @@ class TestGenerateFoodMappings:
         assert mtime_after == mtime_before
 
 
+
+
+def _write_export(path, quick_export: list[list] | None) -> str:
+    """Write a Food Log sheet and, unless None, a "Quick Export" sheet with the given rows."""
+    wb = openpyxl.Workbook()
+    wb.active.title = "Food Log"
+    if quick_export is not None:
+        ws = wb.create_sheet("Quick Export")
+        ws.append(["Date", "Expenditure", "Trend Weight (kg)", "Calories (kcal)", "Target Calories (kcal)"])
+        for row in quick_export:
+            ws.append(row)
+    wb.save(path)
+    return str(path)
+
+
+class TestParseDailyExpenditure:
+    def test_reads_expenditure_by_date(self, tmp_path):
+        path = _write_export(tmp_path / "export.xlsx", [
+            [datetime(2026, 8, 8), 2570.0, 74.9, 2400.0, 2600.0],
+            [datetime(2026, 8, 9), 2565.0, 74.9, None, 2600.0],
+        ])
+        assert parse_daily_expenditure(path) == {"2026-08-08": 2570.0, "2026-08-09": 2565.0}
+
+    def test_falls_back_to_target_calories(self, tmp_path):
+        path = _write_export(tmp_path / "export.xlsx", [[datetime(2026, 8, 9), None, 74.9, None, 2600.0]])
+        assert parse_daily_expenditure(path) == {"2026-08-09": 2600.0}
+
+    def test_leaves_out_days_with_neither_figure(self, tmp_path):
+        path = _write_export(tmp_path / "export.xlsx", [[datetime(2026, 8, 9), None, 74.9, None, None]])
+        assert parse_daily_expenditure(path) == {}
+
+    def test_export_without_quick_export_sheet_has_no_expenditure(self, tmp_path):
+        path = _write_export(tmp_path / "export.xlsx", None)
+        assert parse_daily_expenditure(path) == {}
+
+    def test_reads_real_export(self):
+        expenditure = parse_daily_expenditure("data/MacroFactor-example.xlsx")
+        assert expenditure
+        assert all(kcal > 0 for kcal in expenditure.values())
+
+
+class TestCheckLastDay:
+    def _entries(self, kcal_by_date: dict[str, float]) -> list:
+        return [food_entry("Reis", date=d, calories_kcal=kcal) for d, kcal in kcal_by_date.items()]
+
+    def test_last_day_under_half_of_expenditure_is_partial(self):
+        entries = self._entries({"2026-08-08": 2500.0, "2026-08-09": 1196.0})
+        check = check_last_day(entries, {"2026-08-08": 2570.0, "2026-08-09": 2570.0})
+        assert check == {"date": "2026-08-09", "logged_kcal": 1196.0, "expenditure_kcal": 2570.0, "partial": True}
+
+    def test_last_day_at_or_over_half_of_expenditure_counts(self):
+        entries = self._entries({"2026-08-08": 2500.0, "2026-08-09": 1285.0})
+        check = check_last_day(entries, {"2026-08-09": 2570.0})
+        assert check is not None and check["partial"] is False
+
+    def test_sums_every_entry_of_the_last_day(self):
+        entries = self._entries({"2026-08-08": 2500.0}) + [
+            food_entry("Reis", date="2026-08-09", calories_kcal=700.0),
+            food_entry("Quick Add", date="2026-08-09", calories_kcal=700.0),
+        ]
+        check = check_last_day(entries, {"2026-08-09": 2570.0})
+        assert check is not None
+        assert check["logged_kcal"] == 1400.0
+        assert check["partial"] is False
+
+    def test_last_day_without_expenditure_counts(self):
+        entries = self._entries({"2026-08-08": 2500.0, "2026-08-09": 300.0})
+        check = check_last_day(entries, {"2026-08-08": 2570.0})
+        assert check == {"date": "2026-08-09", "logged_kcal": 300.0, "expenditure_kcal": None, "partial": False}
+
+    def test_only_day_is_never_partial(self):
+        """Leaving out the only day would leave nothing to analyse."""
+        assert check_last_day(self._entries({"2026-08-09": 300.0}), {"2026-08-09": 2570.0}) is None
+
+    def test_no_entries(self):
+        assert check_last_day([], {}) is None
