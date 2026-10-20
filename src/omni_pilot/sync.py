@@ -6,11 +6,15 @@ only what changed and only if S3 still holds the version that was pulled.
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from typing import NamedTuple
 
+from omni_pilot.parser import parse_food_log
 from omni_pilot.s3 import S3Client, S3Error
+
+EXPORTS_PREFIX = "exports/"
 
 
 class DataFile(NamedTuple):
@@ -140,3 +144,54 @@ def push(client: S3Client, files: list[DataFile], state_file: str) -> list[str]:
         _save_state(state_file, state)
         uploaded.append(f.label)
     return uploaded
+
+
+def export_key(path: str) -> str | None:
+    """S3 key for a MacroFactor export: its Food Log date range and a content hash.
+
+    The same file always gets the same key, whatever it is called locally.
+    None when the Food Log has no entries.
+    """
+    logging.disable(logging.WARNING)  # the parser warns about every "Quick Add" row
+    try:
+        entries = parse_food_log(path)
+    finally:
+        logging.disable(logging.NOTSET)
+    if not entries:
+        return None
+    dates = [e["date"][:10] for e in entries]
+    with open(path, "rb") as f:
+        digest = _sha256(f.read())[:8]
+    return f"{EXPORTS_PREFIX}{min(dates)}_{max(dates)}_{digest}.xlsx"
+
+
+def upload_export(client: S3Client, path: str) -> tuple[str, bool] | None:
+    """Upload an export unless S3 already holds it. Returns (key, uploaded), None if empty."""
+    key = export_key(path)
+    if key is None:
+        return None
+    with open(path, "rb") as f:
+        body = f.read()
+    try:
+        client.put(key, body, if_none_match=True)
+    except S3Error as e:
+        if e.kind != "conflict":
+            raise
+        return key, False
+    return key, True
+
+
+def pull_exports(client: S3Client, exports_dir: str = "data") -> list[str]:
+    """Download the exports S3 holds that exports_dir lacks. Returns the file names."""
+    have = set(os.listdir(exports_dir)) if os.path.isdir(exports_dir) else set()
+    pulled: list[str] = []
+    for key in client.list(EXPORTS_PREFIX):
+        name = key.removeprefix(EXPORTS_PREFIX)
+        if not name or name in have:
+            continue
+        result = client.get(key)
+        if result is None:
+            continue
+        _write_atomic(os.path.join(exports_dir, name), result[0])
+        pulled.append(name)
+    return pulled

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import openpyxl
+
 from omni_pilot.enricher import CustomFoodMatch, EnrichmentResult, LowConfidenceMatch
 
 
@@ -46,6 +48,28 @@ def food_entry(
         "fat_g": fat_g,
         "carbs_g": carbs_g,
     }
+
+
+def write_food_log(path, rows: list[list]) -> str:
+    """Write a "Food Log" sheet in MacroFactor's column layout, one list per food row."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Food Log"
+    ws.append(["Date", "Time", "Food Name"])
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
+    return str(path)
+
+
+def food_row(
+    food_name: str, fiber: float | None = None, columns: int = 61, date: str = "2026-10-04"
+) -> list:
+    """A food row as wide as a real export, with the fiber cell set (None leaves it empty)."""
+    row = [date, "12:00", food_name, "g", 100, 1, 50.0, 1.0, 10.0, 2.0] + [None] * (columns - 10)
+    if fiber is not None:
+        row[27] = fiber
+    return row
 
 
 class FakeS3Client:

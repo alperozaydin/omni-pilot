@@ -1,11 +1,22 @@
 import json
 import os
+import re
+import shutil
 
 import pytest
 
 from omni_pilot.s3 import S3Error
-from omni_pilot.sync import SyncError, data_files, pull, push, state_path
-from tests.helpers import FakeS3Client
+from omni_pilot.sync import (
+    SyncError,
+    data_files,
+    export_key,
+    pull,
+    pull_exports,
+    push,
+    state_path,
+    upload_export,
+)
+from tests.helpers import FakeS3Client, food_row, write_food_log
 
 
 def setup(tmp_path):
@@ -207,3 +218,116 @@ def test_deleted_locally_after_pull_stops(tmp_path):
     os.remove(files[1].path)
     with pytest.raises(SyncError):
         push(client, files, sf)
+
+
+# --- exports ---
+
+EXPORT_KEY = re.compile(r"exports/\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}_[0-9a-f]{8}\.xlsx")
+
+
+def make_export(tmp_path, name="export.xlsx", dates=("2026-10-04", "2026-10-02", "2026-10-06")):
+    rows = [food_row("Banana", date=d) for d in dates]
+    return write_food_log(tmp_path / name, rows)
+
+
+def test_export_key_uses_food_log_dates_and_hash(tmp_path):
+    key = export_key(make_export(tmp_path))
+
+    assert EXPORT_KEY.fullmatch(key)
+    assert key.startswith("exports/2026-10-02_2026-10-06_")
+
+
+def test_same_file_same_key(tmp_path):
+    path = make_export(tmp_path)
+    copy = tmp_path / "other name.xlsx"
+    shutil.copy(path, copy)
+
+    assert export_key(str(copy)) == export_key(path)
+
+
+def test_empty_export_has_no_key_and_is_not_uploaded(tmp_path):
+    path = write_food_log(tmp_path / "empty.xlsx", [])
+    client = FakeS3Client()
+
+    assert export_key(path) is None
+    assert upload_export(client, path) is None
+    assert client.calls == []
+
+
+def test_upload_export_uses_if_none_match(tmp_path):
+    path = make_export(tmp_path)
+    client = FakeS3Client()
+
+    key, uploaded = upload_export(client, path)
+
+    assert uploaded is True
+    assert client.puts[0]["key"] == key
+    assert client.puts[0]["if_none_match"] is True
+    assert client.puts[0]["body"] == read(path)
+
+
+def test_upload_existing_export_is_success(tmp_path):
+    path = make_export(tmp_path)
+    client = FakeS3Client()
+    upload_export(client, path)
+
+    key, uploaded = upload_export(client, path)
+
+    assert EXPORT_KEY.fullmatch(key)
+    assert uploaded is False
+    assert len(client.objects) == 1
+
+
+def test_upload_export_other_errors_propagate(tmp_path):
+    class Failing(FakeS3Client):
+        def put(self, key, body, **kwargs):
+            raise S3Error("network", "S3 not reachable")
+
+    with pytest.raises(S3Error):
+        upload_export(Failing(), make_export(tmp_path))
+
+
+def test_pull_exports_fetches_only_missing(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "2026-09-01_2026-09-30_aaaaaaaa.xlsx").write_bytes(b"have")
+    client = FakeS3Client(
+        {
+            "exports/2026-09-01_2026-09-30_aaaaaaaa.xlsx": (b"have", '"a"'),
+            "exports/2026-10-01_2026-10-20_bbbbbbbb.xlsx": (b"new", '"b"'),
+            "food_db.json": (b"db", '"c"'),
+        }
+    )
+
+    pulled = pull_exports(client, str(data))
+
+    assert pulled == ["2026-10-01_2026-10-20_bbbbbbbb.xlsx"]
+    assert [c for c in client.calls if c[0] == "get"] == [
+        ("get", "exports/2026-10-01_2026-10-20_bbbbbbbb.xlsx")
+    ]
+    assert read(data / "2026-10-01_2026-10-20_bbbbbbbb.xlsx") == b"new"
+    assert read(data / "2026-09-01_2026-09-30_aaaaaaaa.xlsx") == b"have"
+
+
+def test_pull_exports_creates_data_folder(tmp_path):
+    data = tmp_path / "fresh" / "data"
+    client = FakeS3Client({"exports/2026-10-01_2026-10-20_bbbbbbbb.xlsx": (b"new", '"b"')})
+
+    assert pull_exports(client, str(data)) == ["2026-10-01_2026-10-20_bbbbbbbb.xlsx"]
+    assert os.path.isdir(data)
+
+
+def test_pulled_export_name_drops_prefix(tmp_path):
+    path = make_export(tmp_path)
+    client = FakeS3Client()
+    key, _ = upload_export(client, path)
+    data = tmp_path / "data"
+
+    pull_exports(client, str(data))
+
+    assert os.listdir(data) == [key.removeprefix("exports/")]
+    assert read(data / key.removeprefix("exports/")) == read(path)
+
+
+def test_pull_exports_with_nothing_in_s3_does_nothing(tmp_path):
+    assert pull_exports(FakeS3Client(), str(tmp_path / "data")) == []
