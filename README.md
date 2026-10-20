@@ -124,6 +124,8 @@ Then fetch the data once:
 make pull
 ```
 
+For a new, empty bucket, run `make push` once from the device that has the data (with no sync state it uploads every file as new) before `make pull` on the others.
+
 ---
 
 ## Desktop Usage
