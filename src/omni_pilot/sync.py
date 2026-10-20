@@ -136,8 +136,7 @@ def push(client: S3Client, files: list[DataFile], state_file: str) -> list[str]:
             raise S3Error(
                 "conflict",
                 f"{f.key} changed in S3 since it was downloaded (another device or the "
-                "daily routine wrote it). Nothing more was uploaded. Run again: the next "
-                "run downloads the new version.",
+                "daily routine wrote it). Nothing more was uploaded.",
             ) from e
 
         state[f.key] = {"etag": new_etag, "sha256": sha}

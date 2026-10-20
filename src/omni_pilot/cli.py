@@ -110,7 +110,10 @@ def cmd_push(args: argparse.Namespace) -> None:
             print(f"  {key}: {'uploaded' if uploaded else 'already in S3'}")
         labels = push(client, files, state_file)
     except (S3Error, SyncError) as e:
-        print(f"Error: {e}")
+        if isinstance(e, S3Error) and e.kind == "conflict":
+            print(f"Error: {e} Run `make pull` (it replaces your local changes), redo them, then push again.")
+        else:
+            print(f"Error: {e}")
         sys.exit(1)
     for label in labels:
         print(f"  {label}: uploaded")

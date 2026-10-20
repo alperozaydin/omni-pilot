@@ -171,7 +171,10 @@ def test_conflict_on_database_stops_before_mappings(tmp_path):
         push(client, files, sf)
     assert e.value.kind == "conflict"
     msg = str(e.value)
-    assert "food_db.json" in msg and "Nothing more was uploaded" in msg and "Run again" in msg
+    assert msg == (
+        "food_db.json changed in S3 since it was downloaded (another device or the daily routine "
+        "wrote it). Nothing more was uploaded."
+    )
     assert [p["key"] for p in client.puts] == ["food_db.json"]
 
 

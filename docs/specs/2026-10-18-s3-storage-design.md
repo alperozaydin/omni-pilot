@@ -247,7 +247,7 @@ A pull always replaces the local copy: S3 wins. It does not check for unpushed l
    - Changed → `PUT` with `If-Match: <recorded ETag>`, or `If-None-Match: *` if it was absent in S3 at pull time.
    - Present at pull, deleted locally → not supported: stop with a message (there is no delete permission and no use for one).
    - Success → update that file's ETag and SHA-256 in the sync state and save it immediately.
-   - 412 → stop. The files after it are not pushed. Message: `<file> changed in S3 since it was downloaded (another device or the daily routine wrote it). Nothing more was uploaded. Run again: the next run downloads the new version.`
+   - 412 → stop. The files after it are not pushed. Message: `<file> changed in S3 since it was downloaded (another device or the daily routine wrote it). Nothing more was uploaded.` Each caller adds its next step: `analyze` ends its red line with `Run analyze again.` (its next run pulls first); `push` adds ``Run `make pull` (it replaces your local changes), redo them, then push again.``
 3. Print one line per uploaded file.
 
 The database goes first because it is the file most likely to be written concurrently; a conflict on it stops the others. A partial push (database uploaded, a later file refused) is acceptable: `food_mappings.yaml` mirrors translations that are also in the database and is synced both ways on the next `analyze`; `custom_foods.yaml` is only written by the skill and the routine.

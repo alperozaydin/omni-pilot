@@ -629,7 +629,12 @@ class TestCLIPullPush:
         with pytest.raises(SystemExit) as exc:
             self.run(mocker, "push", "--settings", self.settings(tmp_path, self.FULL_S3))
         assert exc.value.code == 1
-        assert "changed in S3" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert (
+            "food_db.json changed in S3 since it was downloaded (another device or the daily routine "
+            "wrote it). Nothing more was uploaded. Run `make pull` (it replaces your local changes), "
+            "redo them, then push again." in out
+        )
 
 
 class TestCLIAnalyzeS3:
@@ -832,7 +837,7 @@ class TestCLIAnalyzeS3:
         out = self.output(capsys)
         assert "Results were not saved to S3:" in out
         assert "food_db.json changed in S3 since it was downloaded" in out
-        assert out.endswith("downloads the new version. Run analyze again.")
+        assert out.endswith("Nothing more was uploaded. Run analyze again.")
 
     def test_analyze_bar43_stop_does_not_upload(self, mocker, tmp_path, capsys):
         fake = self.fake()
