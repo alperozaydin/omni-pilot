@@ -70,17 +70,55 @@ def test_pull_creates_missing_folders(tmp_path):
     assert (tmp_path / "db").is_dir() and (tmp_path / "config").is_dir()
 
 
-def test_pull_deletes_local_file_absent_in_s3(tmp_path):
+def test_pull_deletes_local_file_that_came_from_s3_and_is_gone(tmp_path):
+    files, sf = setup(tmp_path)
+    client = s3_with_all()
+    pull(client, files, sf)
+    del client.objects["custom_foods.yaml"]
+    found = pull(client, files, sf)
+    assert found == ["database", "mappings"]
+    assert not os.path.exists(files[2].path)
+    assert state(sf)["custom_foods.yaml"] == {"etag": None, "sha256": None}
+
+
+def keep_local_recipes_never_in_s3(tmp_path):
     files, sf = setup(tmp_path)
     client = s3_with_all()
     del client.objects["custom_foods.yaml"]
     os.makedirs(os.path.dirname(files[2].path))
     with open(files[2].path, "wb") as f:
-        f.write(b"old")
+        f.write(b"local recipes")
     found = pull(client, files, sf)
+    return files, sf, client, found
+
+
+def test_pull_keeps_local_file_never_in_s3(tmp_path, capsys):
+    files, sf, _, found = keep_local_recipes_never_in_s3(tmp_path)
     assert found == ["database", "mappings"]
-    assert not os.path.exists(files[2].path)
+    assert read(files[2].path) == b"local recipes"
     assert state(sf)["custom_foods.yaml"] == {"etag": None, "sha256": None}
+    assert "recipes: not in S3 — kept the local file; push uploads it" in capsys.readouterr().out
+
+
+def test_pull_keeps_local_file_when_state_says_absent(tmp_path, capsys):
+    files, sf = setup(tmp_path)
+    client = s3_with_all()
+    del client.objects["custom_foods.yaml"]
+    pull(client, files, sf)  # state: custom_foods.yaml absent (etag null)
+    with open(files[2].path, "wb") as f:
+        f.write(b"new recipes")
+    pull(client, files, sf)
+    assert read(files[2].path) == b"new recipes"
+    assert "recipes: not in S3 — kept the local file" in capsys.readouterr().out
+
+
+def test_push_uploads_kept_local_file_as_new(tmp_path):
+    files, sf, client, _ = keep_local_recipes_never_in_s3(tmp_path)
+    assert push(client, files, sf) == ["recipes"]
+    assert [(p["key"], p["if_match"], p["if_none_match"]) for p in client.puts] == [
+        ("custom_foods.yaml", None, True)
+    ]
+    assert client.objects["custom_foods.yaml"][0] == b"local recipes"
 
 
 def test_pull_all_absent_stops_without_touching_local(tmp_path):

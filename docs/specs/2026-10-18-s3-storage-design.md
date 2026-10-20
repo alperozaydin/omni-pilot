@@ -1,6 +1,6 @@
 # Technical Specification: Store the App's Data in S3 (BAR-83)
 
-**Document Version:** 1.3 (AWS setup moved to CDK in `infra/`; export uploaded before the data files; S3 settings from environment variables for cloud sessions)
+**Document Version:** 1.4 (AWS setup moved to CDK in `infra/`; export uploaded before the data files; S3 settings from environment variables for cloud sessions; pull keeps a local file that was never in S3)
 **Date:** 2026-10-18
 **Status:** Approved
 **Linear Issue:** [BAR-83](https://linear.app/knaak/issue/BAR-83/store-the-apps-data-in-s3-instead-of-icloud) (part 2 of [BAR-81](https://linear.app/knaak/issue/BAR-81/automate-the-custom-food-skill))
@@ -228,7 +228,7 @@ The signing is checked in tests against AWS's published Signature Version 4 exam
 
 1. For each of the three data files: `GET` it from S3.
    - Found: write the body to the local path (create the folder if needed, write to a temp file then rename, so a failure mid-write leaves the old file), and record its ETag and SHA-256.
-   - Not found (404): delete the local file if there is one, and record it as absent.
+   - Not found (404): record it as absent (ETag and SHA-256 `null`). Delete the local file only if the existing sync state recorded a non-null ETag for it (it came from S3 before). Otherwise keep the local file and print `<label>: not in S3 — kept the local file; push uploads it`; the next push uploads it with `If-None-Match: *`.
 2. If all three are absent in S3, stop with exit code 1 before touching any local file: `S3 bucket <name> has none of the data files — wrong bucket, or the one-time copy was not done`. (Step 1 therefore fetches all three first and writes only after this check.)
 3. Write the **sync state** (below).
 4. With `exports=True`: list `exports/` and download every export not already in the local exports folder (§6). Existing local files are never fetched again: exports never change.
@@ -349,7 +349,7 @@ No test sends a request to real S3 (like the rule for Gemini): every test fakes 
 
 - **Signing:** matches AWS's published Signature Version 4 example (canonical request, string to sign, signature).
 - **Client:** 404 → `None`; 403/409/412/5xx/connection error → `S3Error` of the right kind; `If-Match` / `If-None-Match` headers sent; the URL never contains the key or the signature; the message never contains the secret; list follows continuation tokens; timeouts passed as the tuple.
-- **Pull:** writes files and state; deletes a local file absent in S3; all-absent stops without touching local files; a failed GET leaves the old local files; `--exports` fetches only missing exports.
+- **Pull:** writes files and state; deletes a local file absent in S3 only when the state recorded an ETag for it, and keeps one that was never in S3 (the next push uploads it as new); all-absent stops without touching local files; a failed GET leaves the old local files; `--exports` fetches only missing exports.
 - **Push:** unchanged files skipped; changed file sent with its recorded ETag; absent-at-pull sent with `If-None-Match: *`; 412 on the database stops before mappings; state updated after each success; no state → all treated as absent.
 - **Export key:** dates from the Food Log, 8-character hash; same file → same key; 412 on upload treated as already there.
 - **`analyze`:** pull failure exits 1 with no report; export uploaded before the data files, and a failed export upload pushes no data file; upload failure writes the report, prints the red line and exits 1; BAR-43 stop does not push; no `s3` section and no environment variables → no S3 call at all and today's behaviour; incomplete → exit 1.

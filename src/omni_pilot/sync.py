@@ -82,12 +82,18 @@ def pull(client: S3Client, files: list[DataFile], state_file: str) -> list[str]:
             "wrong bucket, or the one-time copy was not done"
         )
 
+    previous = _load_state(state_file) or {}
     state: dict[str, dict] = {}
     found: list[str] = []
     for f, result in fetched:
         if result is None:
+            # Delete only a copy that came from S3; a file never uploaded is kept for push.
+            came_from_s3 = (previous.get(f.key) or {}).get("etag") is not None
             if os.path.exists(f.path):
-                os.remove(f.path)
+                if came_from_s3:
+                    os.remove(f.path)
+                else:
+                    print(f"{f.label}: not in S3 — kept the local file; push uploads it")
             state[f.key] = {"etag": None, "sha256": None}
         else:
             body, etag = result
