@@ -20,6 +20,13 @@ def _custom_foods_in_tmp(monkeypatch, tmp_path):
     monkeypatch.setattr("omni_pilot.cli.DEFAULT_CUSTOM_FOODS", str(tmp_path / "custom_foods.yaml"))
 
 
+@pytest.fixture(autouse=True)
+def _no_s3_from_environment(monkeypatch):
+    """Keep the shell's OMNI_PILOT_S3_* variables out: with them, analyze would talk to real S3."""
+    for var in ("BUCKET", "REGION", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(f"OMNI_PILOT_S3_{var}", raising=False)
+
+
 class TestCLIHelp:
     def test_help_exits_cleanly(self, mocker):
         mocker.patch("sys.argv", ["omni_pilot", "--help"])
@@ -487,8 +494,6 @@ class TestCLIAnalyze:
 class TestCLIPullPush:
     @pytest.fixture(autouse=True)
     def _isolated(self, monkeypatch, tmp_path):
-        for var in ("BUCKET", "REGION", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
-            monkeypatch.delenv(f"OMNI_PILOT_S3_{var}", raising=False)
         monkeypatch.chdir(tmp_path)  # pull --exports writes to ./data
         self.db = tmp_path / "db" / "food_db.json"
         self.mappings = tmp_path / "food_mappings.yaml"
@@ -632,3 +637,216 @@ class TestCLIPullPush:
             self.run(mocker, "push", "--settings", self.settings(tmp_path, self.FULL_S3))
         assert exc.value.code == 1
         assert "changed in S3" in capsys.readouterr().out
+
+
+class TestCLIAnalyzeS3:
+    """analyze pulls from S3 before it starts and saves the export and data files after the report."""
+
+    FULL_S3 = TestCLIPullPush.FULL_S3
+
+    @pytest.fixture(autouse=True)
+    def _isolated(self, mocker, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)  # reports/ is written in the working directory
+        self.db = tmp_path / "db" / "food_db.json"
+        self.mappings = tmp_path / "food_mappings.yaml"
+        self.recipes = tmp_path / "recipes.yaml"
+        self.ref_ranges = tmp_path / "ref_ranges.yaml"
+        self.ref_ranges.write_text(yaml.dump({"nutrients": {}}))
+        from tests.helpers import food_row, write_food_log
+
+        self.export = write_food_log(
+            tmp_path / "data.xlsx", [food_row("Apple", date="2026-10-01"), food_row("Apple", date="2026-10-02")]
+        )
+        mocker.patch("omni_pilot.cli.resolve_and_sync_mappings", return_value={"Apple": "apple"})
+        self.mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods", side_effect=self._enrich)
+        mocker.patch("omni_pilot.cli.analyze", return_value={})
+        self.mock_report = mocker.patch("omni_pilot.cli.print_terminal_report")
+        self.mock_html = mocker.patch("omni_pilot.cli.generate_html_report", side_effect=self._write_html)
+        self.enrichment = enrichment({"Apple": {}})
+
+    def _enrich(self, food_names, mappings, logged_macros, db, api_key, custom_foods):
+        db.insert({"original_name": "Apple", "usda_query": "apple", "per_100g": {}})  # the run changes the database
+        return self.enrichment
+
+    @staticmethod
+    def _write_html(result, path):
+        with open(path, "w") as f:
+            f.write("<html></html>")
+
+    def settings(self, tmp_path, s3=None):
+        path = tmp_path / "settings.yaml"
+        body = {
+            "usda_api_key": "fake_key",
+            "database_path": str(self.db),
+            "mappings_path": str(self.mappings),
+            "custom_foods_path": str(self.recipes),
+        }
+        if s3 is not None:
+            body["s3"] = s3
+        path.write_text(yaml.dump(body))
+        return str(path)
+
+    def fake(self, **extra):
+        from tests.helpers import FakeS3Client
+
+        objects = {
+            "food_db.json": (b'{"_default": {}}', '"db-1"'),
+            "food_mappings.yaml": (b"mappings:\n  Apple: apple\n", '"map-1"'),
+        }
+        objects.update(extra)
+        return FakeS3Client(objects, bucket="omni-pilot-data")
+
+    def run(self, mocker, tmp_path, s3=None, html=False):
+        argv = ["omni_pilot", "analyze", self.export, "--settings", self.settings(tmp_path, s3),
+                "--ref-ranges", str(self.ref_ranges)]
+        if html:
+            argv.append("--html")
+        mocker.patch("sys.argv", argv)
+        main()
+
+    @staticmethod
+    def output(capsys) -> str:
+        """Captured stdout with line breaks folded, since Rich wraps long lines."""
+        return " ".join(capsys.readouterr().out.split())
+
+    def puts(self, fake) -> list[str]:
+        return [key for op, key in fake.calls if op == "put"]
+
+    def test_analyze_not_configured_makes_no_s3_call_and_says_so(self, mocker, tmp_path, capsys):
+        mock_client = mocker.patch("omni_pilot.cli.S3Client")
+        self.run(mocker, tmp_path)
+        mock_client.assert_not_called()
+        self.mock_report.assert_called_once()
+        assert "S3: not configured — local files only" in capsys.readouterr().out
+
+    def test_analyze_incomplete_s3_settings_exit_1_before_anything(self, mocker, tmp_path, capsys):
+        mock_client = mocker.patch("omni_pilot.cli.S3Client")
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, tmp_path, s3={"bucket": "omni-pilot-data"})
+        assert exc.value.code == 1
+        assert "region" in capsys.readouterr().out
+        mock_client.assert_not_called()
+        self.mock_enrich.assert_not_called()
+        self.mock_report.assert_not_called()
+
+    def test_analyze_pull_failure_exits_1_without_report(self, mocker, tmp_path, capsys):
+        fake = self.fake()
+        fake.fail_get_on = "food_db.json"
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, tmp_path, s3=self.FULL_S3, html=True)
+        assert exc.value.code == 1
+        assert "S3 not reachable" in capsys.readouterr().out
+        self.mock_enrich.assert_not_called()
+        self.mock_report.assert_not_called()
+        assert not (tmp_path / "reports" / "latest.html").exists()
+        assert self.puts(fake) == []
+
+    def test_analyze_pulls_before_reading_custom_foods(self, mocker, tmp_path, capsys):
+        fake = self.fake(**{"custom_foods.yaml": (CAPRESE_RECIPE.encode(), '"rec-1"')})
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        assert not self.recipes.exists()
+        self.run(mocker, tmp_path, s3=self.FULL_S3)
+        out = capsys.readouterr().out
+        assert "S3: pulled from omni-pilot-data (database, mappings, recipes)" in out
+        assert f"Custom foods: {self.recipes} (1 recipes, 1 foods)" in out
+        assert self.mock_enrich.call_args.kwargs["custom_foods"]["by_food"] == {"Salat Caprese": "caprese"}
+
+    def test_analyze_uploads_export_then_pushes(self, mocker, tmp_path, capsys):
+        fake = self.fake()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        self.run(mocker, tmp_path, s3=self.FULL_S3)
+        puts = self.puts(fake)
+        assert puts[0].startswith("exports/2026-10-01_2026-10-02_")
+        assert puts[1:] == ["food_db.json"]
+        name = puts[0].removeprefix("exports/")
+        assert f"S3: uploaded export {name}; database" in capsys.readouterr().out
+
+    def test_analyze_same_export_twice_still_pushes_and_exits_0(self, mocker, tmp_path, capsys):
+        fake = self.fake()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        self.run(mocker, tmp_path, s3=self.FULL_S3)
+        capsys.readouterr()
+        fake.calls.clear()
+
+        self.run(mocker, tmp_path, s3=self.FULL_S3)  # no SystemExit
+
+        assert self.puts(fake)[-1] == "food_db.json"
+        out = capsys.readouterr().out
+        assert "already in S3; database" in out
+
+    def test_analyze_says_nothing_changed_when_nothing_was_uploaded(self, mocker, tmp_path, capsys):
+        fake = self.fake()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        self.run(mocker, tmp_path, s3=self.FULL_S3)
+        capsys.readouterr()
+        self.mock_enrich.side_effect = lambda *args, **kwargs: self.enrichment  # database left as pulled
+
+        self.run(mocker, tmp_path, s3=self.FULL_S3)
+
+        assert "S3: nothing changed" in capsys.readouterr().out
+
+    def test_analyze_export_without_entries_is_not_uploaded_but_data_files_are(self, mocker, tmp_path, capsys):
+        from tests.helpers import write_food_log
+
+        self.export = write_food_log(tmp_path / "empty.xlsx", [])
+        fake = self.fake()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        self.run(mocker, tmp_path, s3=self.FULL_S3)
+        assert self.puts(fake) == ["food_db.json"]
+        out = capsys.readouterr().out
+        assert "S3: export has no Food Log entries — not uploaded" in out
+        assert "S3: database" in out
+
+    def test_analyze_export_upload_failure_pushes_no_data_file(self, mocker, tmp_path, capsys):
+        from omni_pilot.s3 import S3Error
+
+        fake = self.fake()
+        orig_put = fake.put
+
+        def failing_put(key, body, **kw):
+            if key.startswith("exports/"):
+                fake.calls.append(("put", key))
+                raise S3Error("network", "S3 not reachable — is the network down?")
+            return orig_put(key, body, **kw)
+
+        fake.put = failing_put
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, tmp_path, s3=self.FULL_S3, html=True)
+        assert exc.value.code == 1
+        assert "food_db.json" not in self.puts(fake)
+        self.mock_report.assert_called_once()
+        assert (tmp_path / "reports" / "latest.html").exists()
+        out = self.output(capsys)
+        assert "Results were not saved to S3: S3 not reachable — is the network down? Run analyze again." in out
+
+    def test_analyze_push_conflict_writes_report_then_red_line_exit_1(self, mocker, tmp_path, capsys):
+        fake = self.fake()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+
+        def enrich_while_another_device_writes(*args, **kwargs):
+            fake.objects["food_db.json"] = (b"newer", '"db-2"')
+            return self._enrich(*args, **kwargs)
+
+        self.mock_enrich.side_effect = enrich_while_another_device_writes
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, tmp_path, s3=self.FULL_S3, html=True)
+        assert exc.value.code == 1
+        self.mock_report.assert_called_once()
+        self.mock_html.assert_called_once()
+        assert (tmp_path / "reports" / "latest.html").exists()
+        out = self.output(capsys)
+        assert "Results were not saved to S3:" in out
+        assert "food_db.json changed in S3 since it was downloaded" in out
+        assert out.endswith("downloads the new version. Run analyze again.")
+
+    def test_analyze_bar43_stop_does_not_upload(self, mocker, tmp_path, capsys):
+        fake = self.fake()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        self.enrichment = enrichment(lookup_failed={"Apple"})
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, tmp_path, s3=self.FULL_S3)
+        assert exc.value.code == 1
+        self.mock_report.assert_not_called()
+        assert self.puts(fake) == []

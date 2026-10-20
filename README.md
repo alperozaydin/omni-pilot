@@ -13,7 +13,8 @@ MacroFactor tracks calories and macros well, but its micronutrient tracking can 
 - **MacroFactor Log Parsing:** Reads food logs directly from `.xlsx` exports.
 - **Smart AI Food Translation (Gemini API):** Automatically translates messy German or branded food entries into clean, USDA-searchable generic terms (e.g., `"Bio Haferflocken 500g"` → `"cereals, oats, regular and quick, not fortified, dry"`, `"Burger Cheese"` → `"Cheese"`).
 - **USDA FoodData Central Enrichment:** Fetches complete micronutrient and essential amino acid profiles.
-- **Local TinyDB Cache:** Caches translations and USDA food profiles in `db/food_db.json` to prevent redundant network calls and enable offline analysis.
+- **Local TinyDB Cache:** Caches translations and USDA food profiles in `db/food_db.json` to prevent redundant network calls.
+- **Shared S3 Storage:** The food database, mappings, custom recipes and every analysed export live in a private S3 bucket, so the Mac, the iPhone and cloud sessions all work on the same data. Requests are signed by hand (AWS Signature Version 4), so no AWS SDK is needed and it still runs in a-Shell.
 - **Reference Range Comparison:** Evaluates average daily intake against configurable NIH/WHO reference ranges.
 - **Supplements Support:** Automatically adds daily supplement contributions (e.g., multivitamins, Omega-3) configured in `config/supplements.yaml`.
 - **Dual Reporting:** Generates rich color-coded terminal reports and interactive, styled HTML reports (including a convenient `reports/latest.html` copy).
@@ -50,6 +51,8 @@ MacroFactor .xlsx
                                            │ Report   │  │ Report   │
                                            └──────────┘  └──────────┘
 ```
+
+With S3 configured, `analyze` first pulls the database, mappings and custom recipes from S3, and after the reports uploads the export it analysed and pushes the files that changed.
 
 1. **Parser:** Extracts food log entries, daily totals, and food weights from MacroFactor `.xlsx`.
 2. **Gemini Translator:** Automatically cleans and translates new food entries on the fly, saving mappings to TinyDB and `config/food_mappings.yaml`.
@@ -101,6 +104,26 @@ output:
   show_ok_nutrients: true
 ```
 
+### 4. Connect the S3 Storage (optional)
+
+Without an `s3` section the app works on the local files only and says so (`S3: not configured — local files only`). To share the data between devices, uncomment the `s3` section in `config/settings.yaml` and fill in the access key of the `omni-pilot-app` user (see [Deploying the Bucket](#deploying-the-bucket)):
+
+```yaml
+s3:
+  bucket: "omni-pilot-data"
+  region: "eu-central-1"
+  access_key_id: "YOUR_ACCESS_KEY_ID"
+  secret_access_key: "YOUR_SECRET_ACCESS_KEY"
+```
+
+Each value can also come from an environment variable, which wins over `settings.yaml`: `OMNI_PILOT_S3_BUCKET`, `OMNI_PILOT_S3_REGION`, `OMNI_PILOT_S3_ACCESS_KEY_ID`, `OMNI_PILOT_S3_SECRET_ACCESS_KEY`. This is meant for Claude cloud sessions, which start from a fresh clone with no `settings.yaml` of their own. If only some of the values are set, every command stops and names the missing one rather than quietly falling back to local files.
+
+Then fetch the data once:
+
+```bash
+make pull
+```
+
 ---
 
 ## Desktop Usage
@@ -113,6 +136,19 @@ make analyze FILE=data/MacroFactor-Export.xlsx
 # or
 PYTHONPATH=src uv run python -m omni_pilot.cli analyze "data/MacroFactor-Export.xlsx" --html
 ```
+
+With S3 configured this also pulls before it starts and saves to S3 when it is done (see [Sharing Data Across Devices](#sharing-data-across-devices-s3)).
+
+### Pull and Push by Hand
+
+```bash
+make pull   # download the data files and any MacroFactor exports missing from data/
+make push   # upload the data files that changed since the last pull
+# upload an export first, then the data files:
+PYTHONPATH=src uv run python -m omni_pilot.cli push --export data/MacroFactor-Export.xlsx
+```
+
+Use these around hand edits of `config/custom_foods.yaml` or `config/food_mappings.yaml`: pull, edit, push. The next pull overwrites an edit that was not pushed.
 
 ---
 
@@ -149,6 +185,8 @@ view reports/latest.html
 
 *(The `view reports/latest.html` command uses iOS QuickLook to instantly pop up the interactive HTML report on your screen).*
 
+With the `s3` section in the iPhone's `settings.yaml`, `analyze` pulls the latest data from S3 first and saves its results there afterwards, so the iPhone needs a network connection.
+
 ---
 
 ### C. Automated iOS Shortcut
@@ -160,28 +198,36 @@ Install the preconfigured **Omni Pilot** Shortcut to automate the entire analysi
 
 ---
 
-## Cross-Device iCloud Synchronization
+## Sharing Data Across Devices (S3)
 
-Omni Pilot shares and synchronizes your food translations and USDA micronutrient cache across your Mac and iPhone using Apple iCloud Drive.
+The S3 bucket holds the one shared copy of `food_db.json`, `food_mappings.yaml`, `custom_foods.yaml` and the MacroFactor exports. Each device keeps a local working copy at `database_path`, `mappings_path` and `custom_foods_path` (leave them at the defaults). iCloud Drive only carries the code to the iPhone (`make sync-iphone`).
 
-### How to configure:
+- **Pull: S3 always wins.** A pull replaces the local files with the ones in S3, without checking for local changes that were never pushed.
+- **Push never overwrites a newer file.** Each upload is conditional on the file in S3 still being the version that was pulled. If another device (or a daily routine) changed it meanwhile, the push is refused, nothing after it is uploaded, and the command tells you to run again: the next run downloads the new version.
+- **`analyze` saves its results.** After the reports, it uploads the analysed export (named `exports/<first date>_<last date>_<hash>.xlsx`, so the same file is stored once) and then the changed data files. If that fails, the reports are still written, a red `Results were not saved to S3: … Run analyze again.` line follows, and the command exits with code 1. If the pull at the start fails, nothing runs and no report is written.
+- The bucket keeps old versions of every file for 30 days after they are replaced, so a bad push can be undone in the AWS console.
 
-1. **On your Mac** (`~/Projects/omni-pilot/config/settings.yaml`):
-   Point to your shared iCloud database and mappings files:
-   ```yaml
-   database_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/db/food_db.json"
-   mappings_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/config/food_mappings.yaml"
+---
+
+## Deploying the Bucket
+
+The bucket (`omni-pilot-data`, `eu-central-1`, private, versioned) and the `omni-pilot-app` IAM user (read, write and list on that bucket only, no delete) are defined with AWS CDK in `infra/`. You need the AWS CLI with a profile for your account and the `cdk` CLI (`npm install -g aws-cdk`, at least as new as the `aws-cdk-lib` in `uv.lock`).
+
+1. Once per account and region, bootstrap CDK:
+   ```bash
+   cdk bootstrap aws://<account-id>/eu-central-1
    ```
-
-2. **On your iPhone** (inside a-Shell / Shortcuts):
-   When running inside `Shortcuts/omni-pilot`, default relative paths are used:
-   ```yaml
-   database_path: "db/food_db.json"
-   mappings_path: "config/food_mappings.yaml"
+2. Review what will change:
+   ```bash
+   make infra-diff
    ```
+3. Deploy:
+   ```bash
+   make infra-deploy
+   ```
+4. In the AWS console, open IAM → Users → `omni-pilot-app` → Security credentials and create one access key. Paste it into the `s3` section of `config/settings.yaml` on the Mac and on the iPhone (and into the `OMNI_PILOT_S3_*` variables of a cloud environment). The stack deliberately creates no key, so the secret never lands in CloudFormation.
 
-3. **Automatic Creation:**
-   The application expects the database and mappings to live in the cloud. If no database or mappings file exists at the configured cloud path yet, Omni Pilot will automatically create new, empty files at that location and begin populating them on your first run.
+Destroying the stack keeps the bucket and its data.
 
 ---
 
@@ -192,6 +238,10 @@ Omni Pilot shares and synchronizes your food translations and USDA micronutrient
   make test
   # or
   uv run pytest
+  ```
+- **Run the AWS stack tests** (need the `infra` dependency group):
+  ```bash
+  uv run --group infra pytest infra/tests
   ```
 - **Recompile requirements:**
   ```bash

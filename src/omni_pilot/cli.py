@@ -8,6 +8,8 @@ import shutil
 import sys
 from datetime import date
 
+from rich.console import Console
+from rich.text import Text
 from tinydb import TinyDB
 
 from omni_pilot.analyzer import analyze
@@ -27,6 +29,7 @@ from omni_pilot.parser import check_last_day, extract_unique_foods, parse_daily_
 from omni_pilot.reporter import generate_html_report, print_terminal_report
 from omni_pilot.s3 import S3Client, S3Error
 from omni_pilot.sync import (
+    EXPORTS_PREFIX,
     DataFile,
     SyncError,
     data_files,
@@ -139,6 +142,23 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         print("Error: No USDA API key in settings.yaml.")
         sys.exit(1)
 
+    # Pull first: the run must start from S3's copy of the data files.
+    try:
+        s3 = _s3_context(settings)
+    except S3ConfigError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    if s3 is None:
+        print("S3: not configured — local files only")
+    else:
+        client, files, state_file = s3
+        try:
+            labels = pull(client, files, state_file)
+        except (S3Error, SyncError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        print(f"S3: pulled from {client.config.bucket} ({', '.join(labels)})")
+
     try:
         custom_foods = load_custom_foods(custom_foods_path)
     except CustomFoodsError as e:
@@ -214,6 +234,39 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             shutil.copyfile(html_path, latest_path)
         print(f"\nHTML report saved to: {html_path}")
         print(f"  Latest report copy: {latest_path}")
+
+    if s3 is not None:
+        _save_to_s3(*s3, xlsx_path)
+
+
+def _save_to_s3(client: S3Client, files: list[DataFile], state_file: str, xlsx_path: str) -> None:
+    """Upload the analysed export, then the data files that changed; a failure ends with exit code 1.
+
+    The export goes first so the database in S3 never names foods whose logged
+    macros are missing from S3. The reports are already written by now.
+    """
+    try:
+        export = upload_export(client, xlsx_path)
+        if export is None:
+            print("S3: export has no Food Log entries — not uploaded")
+        labels = push(client, files, state_file)
+    except (S3Error, SyncError) as e:
+        message = str(e) if str(e).endswith((".", "?")) else f"{e}."
+        # A Text, so brackets in the message are not read as Rich markup.
+        Console().print(Text(f"Results were not saved to S3: {message} Run analyze again.", style="red"))
+        sys.exit(1)
+
+    notes = []
+    if export is not None:
+        key, uploaded = export
+        name = key.removeprefix(EXPORTS_PREFIX)
+        notes.append(f"uploaded export {name}" if uploaded else f"export {name} already in S3")
+    if labels:
+        notes.append(", ".join(labels))
+    if labels or (export is not None and export[1]):
+        print(f"S3: {'; '.join(notes)}")
+    else:
+        print("S3: nothing changed")
 
 
 def main() -> None:
