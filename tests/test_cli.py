@@ -156,7 +156,7 @@ class TestCLIAnalyze:
         )
         mocker.patch(
             "omni_pilot.cli.resolve_and_sync_mappings",
-            return_value={"Apfel": "apple", "Wasser": "skip", "Lachs": "salmon"},
+            return_value=({"Apfel": "apple", "Wasser": "skip", "Lachs": "salmon"}, set()),
         )
         mocker.patch(
             "omni_pilot.cli.enrich_all_foods",
@@ -199,6 +199,49 @@ class TestCLIAnalyze:
         mock_analyze.assert_not_called()
         mock_report.assert_not_called()
         mock_html.assert_not_called()
+
+    def test_analyze_stops_without_report_when_every_food_is_untranslated(self, mocker, tmp_path, capsys):
+        """Gemini down on a first run must not render an all-deficient report either."""
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {})
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Braune Linsen")])
+        mocker.patch(
+            "omni_pilot.cli.resolve_and_sync_mappings", return_value=({}, {"Braune Linsen"}),
+        )
+        mocker.patch(
+            "omni_pilot.cli.enrich_all_foods", return_value=enrichment(untranslated={"Braune Linsen"}),
+        )
+        mock_analyze = mocker.patch("omni_pilot.cli.analyze", return_value={})
+        mock_report = mocker.patch("omni_pilot.cli.print_terminal_report")
+        mocker.patch("sys.argv", [
+            "omni_pilot", "analyze", "data/MacroFactor-example.xlsx",
+            "--settings", settings_path, "--ref-ranges", ref_ranges_path,
+        ])
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        assert "Error: no food resolved and 1 foods not translated" in capsys.readouterr().out
+        mock_analyze.assert_not_called()
+        mock_report.assert_not_called()
+
+    def test_analyze_passes_untranslated_foods_to_enrichment(self, mocker, tmp_path):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
+        mocker.patch(
+            "omni_pilot.cli.parse_food_log", return_value=[food_entry("Reis"), food_entry("Braune Linsen")],
+        )
+        mocker.patch(
+            "omni_pilot.cli.resolve_and_sync_mappings",
+            return_value=({"Reis": "rice, cooked"}, {"Braune Linsen"}),
+        )
+        mock_enrich = mocker.patch(
+            "omni_pilot.cli.enrich_all_foods",
+            return_value=enrichment({"Reis": {}}, untranslated={"Braune Linsen"}),
+        )
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert mock_enrich.call_args.kwargs["untranslated"] == {"Braune Linsen"}
 
     def test_analyze_still_reports_when_no_food_resolved_but_no_lookup_failed(self, mocker, tmp_path):
         """Nothing in USDA is an answer, not a failure: the report names those foods."""
@@ -366,7 +409,7 @@ class TestCLIAnalyze:
         (tmp_path / "custom_foods.yaml").write_text(CAPRESE_RECIPE)
         mocker.patch("omni_pilot.cli.parse_food_log", return_value=[food_entry("Reis"), food_entry("Salat Caprese")])
         mock_resolve = mocker.patch(
-            "omni_pilot.cli.resolve_and_sync_mappings", return_value={"Reis": "rice, cooked"},
+            "omni_pilot.cli.resolve_and_sync_mappings", return_value=({"Reis": "rice, cooked"}, set()),
         )
         mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
 
@@ -668,14 +711,14 @@ class TestCLIAnalyzeS3:
         self.export = write_food_log(
             tmp_path / "data.xlsx", [food_row("Apple", date="2026-10-01"), food_row("Apple", date="2026-10-02")]
         )
-        mocker.patch("omni_pilot.cli.resolve_and_sync_mappings", return_value={"Apple": "apple"})
+        mocker.patch("omni_pilot.cli.resolve_and_sync_mappings", return_value=({"Apple": "apple"}, set()))
         self.mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods", side_effect=self._enrich)
         mocker.patch("omni_pilot.cli.analyze", return_value={})
         self.mock_report = mocker.patch("omni_pilot.cli.print_terminal_report")
         self.mock_html = mocker.patch("omni_pilot.cli.generate_html_report", side_effect=self._write_html)
         self.enrichment = enrichment({"Apple": {}})
 
-    def _enrich(self, food_names, mappings, logged_macros, db, api_key, custom_foods):
+    def _enrich(self, food_names, mappings, logged_macros, db, api_key, custom_foods, untranslated):
         db.insert({"original_name": "Apple", "usda_query": "apple", "per_100g": {}})  # the run changes the database
         return self.enrichment
 

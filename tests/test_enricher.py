@@ -680,6 +680,45 @@ class TestEnrichAllFoods:
         assert result["not_in_usda"] == set()
         assert result["skipped"] == set()
 
+    def test_untranslated_food_is_not_searched_under_its_own_name(self, mocker, tmp_path):
+        # "Braune Linsen" searched as is found nothing and read as "give it a
+        # recipe"; a German rice found a frozen rice bowl entree. Neither is
+        # cached, so the next run's translation is searched cleanly.
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mock_search = mocker.patch("omni_pilot.enricher.search_usda", return_value=[])
+
+        result = enrich_all_foods(["Braune Linsen"], {}, {}, db, "fake-key", untranslated={"Braune Linsen"})
+
+        assert result["untranslated"] == {"Braune Linsen"}
+        assert result["not_in_usda"] == set()
+        assert result["lookup_failed"] == set()
+        assert "Braune Linsen" not in result["profiles"]
+        mock_search.assert_not_called()
+        assert db.all() == []
+
+    def test_untranslated_food_ignores_an_earlier_cache_entry(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert({
+            "original_name": "Braune Linsen", "usda_query": "Braune Linsen", "not_found": True,
+            "match_version": MATCH_VERSION, "last_updated": "2026-10-20",
+        })
+        mocker.patch("omni_pilot.enricher.search_usda")
+
+        result = enrich_all_foods(["Braune Linsen"], {}, {}, db, "fake-key", untranslated={"Braune Linsen"})
+
+        assert result["untranslated"] == {"Braune Linsen"}
+        assert result["not_in_usda"] == set()
+
+    def test_unmapped_food_gemini_was_not_asked_about_is_searched_as_is(self, mocker, tmp_path):
+        # Without a Gemini key nothing is untranslated: the name is the query.
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.search_usda", return_value=[])
+
+        result = enrich_all_foods(["Lentils"], {}, {}, db, "fake-key")
+
+        assert result["not_in_usda"] == {"Lentils"}
+        assert result["untranslated"] == set()
+
     def test_skip_wins_over_a_not_found_record(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
         db.insert({

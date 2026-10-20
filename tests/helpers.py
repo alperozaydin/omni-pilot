@@ -14,6 +14,7 @@ def enrichment(
     skipped: Iterable[str] = (),
     not_in_usda: Iterable[str] = (),
     lookup_failed: Iterable[str] = (),
+    untranslated: Iterable[str] = (),
     low_confidence: dict[str, LowConfidenceMatch] | None = None,
     custom: dict[str, CustomFoodMatch] | None = None,
 ) -> EnrichmentResult:
@@ -23,6 +24,7 @@ def enrichment(
         "skipped": set(skipped),
         "not_in_usda": set(not_in_usda),
         "lookup_failed": set(lookup_failed),
+        "untranslated": set(untranslated),
         "low_confidence": dict(low_confidence or {}),
         "custom": dict(custom or {}),
     }

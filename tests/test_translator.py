@@ -111,10 +111,11 @@ def test_resolve_and_sync_mappings_gemini_success(mocker, tmp_path):
     settings = {"gemini_api_key": "valid_key", "gemini_model": "gemini-flash-latest"}
     foods = ["Existing Food", "New Food"]
 
-    mappings = resolve_and_sync_mappings(foods, db_path, mappings_path, settings)
+    mappings, untranslated = resolve_and_sync_mappings(foods, db_path, mappings_path, settings)
 
     assert mappings["Existing Food"] == "Oats"
     assert mappings["New Food"] == "egg, whole, raw, fresh"
+    assert untranslated == set()
 
     # Verify TinyDB persistence
     db = TinyDB(db_path)
@@ -135,10 +136,12 @@ def test_resolve_and_sync_mappings_missing_key_graceful(tmp_path):
     settings = {}
     foods = ["Unknown Food"]
 
-    mappings = resolve_and_sync_mappings(foods, db_path, mappings_path, settings)
+    mappings, untranslated = resolve_and_sync_mappings(foods, db_path, mappings_path, settings)
 
     # Does not crash, mappings dictionary contains known entries
     assert "Unknown Food" not in mappings
+    # Gemini was never asked: the food is searched in USDA under its own name
+    assert untranslated == set()
 
 
 def test_resolve_and_sync_mappings_gemini_error_graceful(mocker, tmp_path):
@@ -154,5 +157,50 @@ def test_resolve_and_sync_mappings_gemini_error_graceful(mocker, tmp_path):
     settings = {"gemini_api_key": "valid_key"}
     foods = ["Unknown Food"]
 
-    mappings = resolve_and_sync_mappings(foods, db_path, mappings_path, settings)
+    mappings, untranslated = resolve_and_sync_mappings(foods, db_path, mappings_path, settings)
     assert "Unknown Food" not in mappings
+    assert untranslated == {"Unknown Food"}
+
+
+def test_resolve_and_sync_mappings_reports_foods_gemini_left_untranslated(mocker, tmp_path):
+    """An empty or "ERROR" answer leaves that food untranslated; the others are kept."""
+    db_path = str(tmp_path / "food_db.json")
+    mappings_path = str(tmp_path / "food_mappings.yaml")
+    mocker.patch(
+        "omni_pilot.translator.translate_new_foods",
+        return_value=["lentils, raw", "", "ERROR"],
+    )
+
+    mappings, untranslated = resolve_and_sync_mappings(
+        ["Braune Linsen", "Poké Bowl Reis", "Tee"], db_path, mappings_path, {"gemini_api_key": "valid_key"},
+    )
+
+    assert mappings["Braune Linsen"] == "lentils, raw"
+    assert untranslated == {"Poké Bowl Reis", "Tee"}
+
+
+def test_resolve_and_sync_mappings_wrong_answer_count_leaves_all_untranslated(mocker, tmp_path):
+    db_path = str(tmp_path / "food_db.json")
+    mappings_path = str(tmp_path / "food_mappings.yaml")
+    mocker.patch("omni_pilot.translator.translate_new_foods", return_value=["lentils, raw"])
+
+    mappings, untranslated = resolve_and_sync_mappings(
+        ["Braune Linsen", "Tee"], db_path, mappings_path, {"gemini_api_key": "valid_key"},
+    )
+
+    assert "Braune Linsen" not in mappings
+    assert untranslated == {"Braune Linsen", "Tee"}
+
+
+def test_resolve_and_sync_mappings_known_foods_are_never_untranslated(mocker, tmp_path):
+    db_path = str(tmp_path / "food_db.json")
+    mappings_path = str(tmp_path / "food_mappings.yaml")
+    with open(mappings_path, "w") as f:
+        yaml.dump({"mappings": {"Haferflocken": "oats"}}, f)
+    mocker.patch("omni_pilot.translator.translate_new_foods", side_effect=RuntimeError("timed out"))
+
+    _, untranslated = resolve_and_sync_mappings(
+        ["Haferflocken", "Braune Linsen"], db_path, mappings_path, {"gemini_api_key": "valid_key"},
+    )
+
+    assert untranslated == {"Braune Linsen"}

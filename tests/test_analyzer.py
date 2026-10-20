@@ -426,6 +426,27 @@ class TestUnresolvedFoodCoverage:
         assert coverage["not_in_usda_weight_pct"] == 36.4
         assert coverage["lookup_failed_weight_pct"] == 18.2
 
+    def test_untranslated_food_is_counted_apart_and_unmeasured(self):
+        entries = [
+            {"date": "2026-08-01", "food_name": "Eggs", "total_weight_g": 300.0},
+            {"date": "2026-08-01", "food_name": "Braune Linsen", "total_weight_g": 100.0},
+            {"date": "2026-08-01", "food_name": "Salmon", "total_weight_g": 100.0},
+        ]
+        result = analyze(
+            entries,
+            enrichment(self.PROFILES, not_in_usda={"Salmon"}, untranslated={"Braune Linsen"}),
+            self.REF_RANGES,
+        )
+        coverage = result["coverage"]
+        assert coverage["untranslated_entries"] == 1
+        assert coverage["untranslated_foods"] == ["Braune Linsen"]
+        assert coverage["untranslated_weight_pct"] == 20.0
+        assert coverage["not_in_usda_foods"] == ["Salmon"]
+        assert coverage["not_in_usda_weight_pct"] == 20.0
+        assert coverage["lookup_failed_entries"] == 0
+        # Eggs is 300 of the day's 500 g
+        assert result["nutrients"]["choline_mg"]["coverage_pct"] == 60.0
+
     def test_unresolved_weight_shares_zero_without_food_weight(self):
         entries = [{"date": "2026-08-01", "food_name": "Water", "total_weight_g": 500.0}]
         result = analyze(entries, enrichment(skipped={"Water"}), self.REF_RANGES)
