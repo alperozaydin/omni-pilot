@@ -113,7 +113,7 @@ def test_put_sends_if_match_exactly_as_received(request_mock):
     request_mock.return_value = fake(200, headers={"ETag": '"n"'})
     S3Client(CONFIG).put("food_db.json", b"x", if_match='"9b2cf535f27731c974343645a3985328"')
     assert sent_headers(request_mock)["If-Match"] == '"9b2cf535f27731c974343645a3985328"'
-    assert "If-Match" not in sent_headers(request_mock)["Authorization"]
+    assert "if-match" not in sent_headers(request_mock)["Authorization"]
 
 
 def test_put_if_none_match_sends_star(request_mock):
