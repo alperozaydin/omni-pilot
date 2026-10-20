@@ -248,6 +248,16 @@ def test_list_follows_continuation_tokens(request_mock):
     assert "list-type=2" in first and "prefix=a%2F" in first
 
 
+def test_list_stops_when_truncated_listing_has_no_token(request_mock):
+    ns = "http://s3.amazonaws.com/doc/2006-03-01/"
+    page = (
+        f'<ListBucketResult xmlns="{ns}"><IsTruncated>true</IsTruncated>'
+        "<Contents><Key>a/1</Key></Contents></ListBucketResult>"
+    ).encode()
+    request_mock.side_effect = [fake(200, page), AssertionError("listed a second time")]
+    assert S3Client(CONFIG).list("a/") == ["a/1"]
+
+
 def test_key_with_special_characters_is_encoded(request_mock):
     S3Client(CONFIG).get("dir/my file.json")
     assert request_mock.call_args.kwargs["url"].endswith("/dir/my%20file.json")

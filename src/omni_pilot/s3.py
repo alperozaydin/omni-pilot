@@ -202,3 +202,5 @@ class S3Client:
             if root.findtext(f"{_NS}IsTruncated") != "true":
                 return keys
             token = root.findtext(f"{_NS}NextContinuationToken")
+            if not token:  # without a token the same page would come back forever
+                return keys
