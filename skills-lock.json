@@ -3,7 +3,6 @@
   "skills": {
     "omni-pilot-custom-foods": {
       "source": "alperozaydin/my-skills",
-      "ref": "alozay/bar-83-s3-pull-push",
       "sourceType": "github",
       "skillPath": "skills/omni-pilot-custom-foods/SKILL.md",
       "computedHash": "3e6ce65a91676a11ba67a0fee930169cf30082ff319c049b26efa0dcb6874499"
