@@ -132,7 +132,7 @@ class S3Client:
                 data=body if method == "PUT" else None,
                 timeout=S3_TIMEOUT,
             )
-        except (requests.ConnectionError, requests.Timeout):
+        except requests.RequestException:
             raise S3Error("network", "S3 not reachable — is the network down?") from None
 
     def _raise_for_status(self, resp, key: str) -> None:

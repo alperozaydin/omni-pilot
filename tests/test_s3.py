@@ -176,12 +176,16 @@ def test_500_is_other_with_status_and_key(request_mock):
     assert "500" in exc.value.message and "food_db.json" in exc.value.message
 
 
-@pytest.mark.parametrize("error", [requests.ConnectionError("x"), requests.Timeout("x")])
-def test_connection_error_and_timeout_are_network(request_mock, error):
+@pytest.mark.parametrize(
+    "error",
+    [requests.ConnectionError("x"), requests.Timeout("x"), requests.exceptions.ChunkedEncodingError("x")],
+)
+def test_request_failures_are_network(request_mock, error):
     request_mock.side_effect = error
     with pytest.raises(S3Error) as exc:
         S3Client(CONFIG).get("k")
     assert exc.value.kind == "network"
+    assert exc.value.message == "S3 not reachable — is the network down?"
 
 
 def test_url_never_contains_key_or_signature(request_mock):
