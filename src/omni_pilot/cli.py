@@ -318,7 +318,7 @@ def main() -> None:
 
     push_parser = subparsers.add_parser("push", help="Upload changed data files to S3")
     push_parser.add_argument(
-        "--export", action="append", metavar="FILE", help="MacroFactor export to upload first (repeatable)"
+        "--export", action="extend", nargs="+", metavar="FILE", help="MacroFactor exports to upload first"
     )
     push_parser.add_argument(
         "--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})"

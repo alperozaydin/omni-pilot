@@ -585,6 +585,19 @@ class TestCLIPullPush:
         out = capsys.readouterr().out
         assert "uploaded" in out and "database" in out
 
+    @pytest.mark.parametrize("repeat_flag", [False, True], ids=["one-flag", "flag-per-file"])
+    def test_push_accepts_several_exports(self, mocker, tmp_path, repeat_flag):
+        from tests.helpers import FakeS3Client, food_row, write_food_log
+
+        fake = FakeS3Client()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        first = write_food_log(tmp_path / "a.xlsx", [food_row("Apple", date="2026-10-01")])
+        second = write_food_log(tmp_path / "b.xlsx", [food_row("Pear", date="2026-10-02")])
+        flags = ["--export", first, "--export", second] if repeat_flag else ["--export", first, second]
+        self.run(mocker, "push", *flags, "--settings", self.settings(tmp_path, self.FULL_S3))
+        exports = [k for op, k in fake.calls if op == "put" and k.startswith("exports/")]
+        assert [k[len("exports/"):][:10] for k in exports] == ["2026-10-01", "2026-10-02"]
+
     def test_push_reports_export_already_in_s3(self, mocker, tmp_path, capsys):
         from tests.helpers import FakeS3Client
 
