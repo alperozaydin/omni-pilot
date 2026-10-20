@@ -26,6 +26,13 @@ uv run pytest
 uv run pytest tests/test_analyzer.py
 uv run pytest tests/test_analyzer.py::test_name -v
 
+# AWS stack tests (CDK; the infra dependency group is not installed by plain `uv sync`)
+uv run --group infra pytest infra/tests
+
+# Preview / deploy the AWS stack (bucket + app IAM user)
+make infra-diff
+make infra-deploy
+
 # Regenerate requirements.txt (used for the iOS a-Shell / pip install path)
 uv pip compile pyproject.toml -o requirements.txt
 ```
@@ -45,6 +52,10 @@ The CLI has a single command (`analyze`, in [src/omni_pilot/cli.py](src/omni_pil
 5. **`reporter.py`** — Renders the `AnalysisResult` as a Rich terminal table (grouped by category: Vitamins, Minerals, Other, Amino Acids) and/or a self-contained HTML report via a Jinja2 template. When the last day was left out as partly logged, both report headers name it under the period line (yellow); when every day counted they say nothing about it. After the warnings for skipped foods, foods not in USDA ("give them a custom recipe") and failed lookups ("retried next run"), the last two with their share of food weight (`coverage.not_in_usda_weight_pct` / `lookup_failed_weight_pct`, skipped foods excluded), it prints a "Low-confidence matches" line naming weakly matched foods and their share of analysed weight (from `coverage.low_confidence_foods` / `low_confidence_weight_pct`, computed in `analyzer.py`). A Custom foods line (terminal) and section at the bottom of the HTML report show each recipe, its ingredients and the foods that used it, with `macros off N%` (⚠ above `GOOD_DISTANCE`). A dim "Fiber: N% from MacroFactor's logged values" line (a footnote in the HTML report) appears when any fiber came from the export. HTML reports are timestamped in `reports/` and also copied to `reports/latest.html`.
 
 `config.py` centralizes YAML loading (`settings.yaml`, `reference_ranges.yaml`, `food_mappings.yaml`, `supplements.yaml`) and path resolution (`resolve_path`, which expands `~`/env vars — used to point `database_path`/`mappings_path`/`custom_foods_path` at an iCloud Drive location for cross-device sync between Mac and iPhone).
+
+### Infrastructure
+
+`infra/` holds the AWS CDK stack (`omni_pilot_infra/data_stack.py`, `OmniPilotDataStack`): the private versioned `omni-pilot-data` bucket and the `omni-pilot-app` IAM user. The user's policy grants only `s3:ListBucket`, `s3:GetObject` and `s3:PutObject` on that bucket and never delete; the stack creates no access key. CDK is a separate `infra` dependency group, so it stays out of `requirements.txt` and the iPhone copy (`make sync-iphone` excludes `infra/`).
 
 ### Data flow
 

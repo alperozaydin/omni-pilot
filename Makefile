@@ -1,4 +1,4 @@
-.PHONY: help analyze test lint lint-fix sync-iphone
+.PHONY: help analyze test lint lint-fix sync-iphone infra-diff infra-deploy
 
 ICLOUD_DEST := $(HOME)/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/omni-pilot
 
@@ -9,6 +9,8 @@ help:
 	@echo "  make lint                - Lint code with ruff"
 	@echo "  make lint-fix            - Lint and auto-fix issues with ruff"
 	@echo "  make sync-iphone         - Sync repo code to iCloud for the a-Shell (iPhone) copy"
+	@echo "  make infra-diff          - Show pending changes to the AWS stack (cdk diff)"
+	@echo "  make infra-deploy        - Deploy the AWS stack (cdk deploy)"
 
 analyze:
 ifndef FILE
@@ -26,6 +28,12 @@ lint:
 lint-fix:
 	uv run ruff check --fix .
 
+infra-diff:
+	cd infra && cdk diff
+
+infra-deploy:
+	cd infra && cdk deploy
+
 sync-iphone:
 	uv pip compile pyproject.toml -o requirements.txt
 	rsync -av --delete \
@@ -37,6 +45,7 @@ sync-iphone:
 		--exclude='reports/' \
 		--exclude='.worktrees/' \
 		--exclude='data/' \
+		--exclude='infra/' \
 		--exclude='db/' \
 		--exclude='config/settings.yaml' \
 		--exclude='config/food_mappings.yaml' \

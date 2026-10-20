@@ -4,6 +4,8 @@ __pycache__/
 .DS_Store
 reports/
 .worktrees/
+infra/cdk.out/
+infra/cdk.context.json
 
 # Sensitive Configuration and Data
 config/*.yaml
