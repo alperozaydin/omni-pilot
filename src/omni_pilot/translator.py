@@ -115,8 +115,15 @@ def resolve_and_sync_mappings(
     db_path: str,
     mappings_path: str,
     settings: dict,
-) -> dict[str, str]:
-    """Resolve food mappings from DB & YAML, translate unknown foods via Gemini, and sync persistence."""
+) -> tuple[dict[str, str], set[str]]:
+    """Resolve food mappings from DB & YAML, translate unknown foods via Gemini, and sync persistence.
+
+    Returns the mappings and the foods Gemini was asked about but gave no
+    translation for (an error, a wrong number of answers, an empty answer).
+    Those are retried next run, so the caller must not search USDA under
+    their own name. Without a Gemini key nothing is untranslated: an
+    unmapped food's own name is its query.
+    """
     # 1. Load existing mappings from YAML
     existing_mappings = load_food_mappings(mappings_path)
 
@@ -134,6 +141,7 @@ def resolve_and_sync_mappings(
     known_mappings = {**existing_mappings, **db_mappings}
     known_mappings = {k: str(v).strip() for k, v in known_mappings.items() if v and str(v).strip()}
     new_foods = [f for f in foods if f not in known_mappings]
+    untranslated: set[str] = set()
 
     # 4. If new foods exist, attempt Gemini translation
     if new_foods:
@@ -143,6 +151,7 @@ def resolve_and_sync_mappings(
 
         if gemini_key and gemini_key != "YOUR_GEMINI_API_KEY_HERE":
             print(f"  Using Gemini API ({gemini_model}) to automatically translate and clean foods...")
+            untranslated = set(new_foods)
             try:
                 translations = translate_new_foods(new_foods, gemini_key, model=gemini_model)
                 if len(translations) == len(new_foods):
@@ -151,6 +160,7 @@ def resolve_and_sync_mappings(
                         if english_food and english_food.strip() and english_food != "ERROR":
                             clean_english = english_food.strip()
                             known_mappings[german_food] = clean_english
+                            untranslated.discard(german_food)
                             translations_table.upsert(
                                 {"german": german_food, "english": clean_english},
                                 Query().german == german_food,
@@ -183,4 +193,4 @@ def resolve_and_sync_mappings(
     # 6. Update YAML file (only writes if changed)
     generate_food_mappings(foods, known_mappings, mappings_path)
 
-    return known_mappings
+    return known_mappings, untranslated

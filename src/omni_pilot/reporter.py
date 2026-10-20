@@ -70,9 +70,11 @@ def _coverage_line(coverage: dict) -> str:
     skipped = coverage["skipped_entries"]
     not_in_usda = coverage["not_in_usda_entries"]
     lookup_failed = coverage["lookup_failed_entries"]
+    untranslated = coverage["untranslated_entries"]
     return (
         f"{mapped}/{total} entries analyzed "
-        f"({skipped} skipped, {not_in_usda} not in USDA, {lookup_failed} lookup failed)"
+        f"({skipped} skipped, {not_in_usda} not in USDA, {lookup_failed} lookup failed, "
+        f"{untranslated} not translated)"
     )
 
 
@@ -95,6 +97,15 @@ def _lookup_failed_line(coverage: dict) -> str | None:
         return None
     share = coverage["lookup_failed_weight_pct"]
     return f"Lookup failed ({share:.0f}% of food weight): {', '.join(foods)} — retried next run"
+
+
+def _untranslated_line(coverage: dict) -> str | None:
+    """Name the foods Gemini gave no translation for this run, if any."""
+    foods = coverage["untranslated_foods"]
+    if not foods:
+        return None
+    share = coverage["untranslated_weight_pct"]
+    return f"Not translated ({share:.0f}% of food weight): {', '.join(foods)} — Gemini failed, retried next run"
 
 
 def _low_confidence_line(coverage: dict) -> str | None:
@@ -255,7 +266,7 @@ def print_terminal_report(result: dict, settings: dict) -> None:
         foods_str = ", ".join(coverage["skipped_foods"])
         console.print(f"  ⚠ Skipped foods: {foods_str}", style="yellow")
     # Text, not markup strings: food names can contain "[...]".
-    for line in (_not_in_usda_line(coverage), _lookup_failed_line(coverage)):
+    for line in (_not_in_usda_line(coverage), _lookup_failed_line(coverage), _untranslated_line(coverage)):
         if line:
             console.print(Text(f"  ⚠ {line}", style="red"))
     low_confidence_line = _low_confidence_line(coverage)
@@ -363,11 +374,12 @@ HTML_TEMPLATE = """\
     {% if logged_fiber_line %}
     <p class="footnote">{{ logged_fiber_line }}</p>
     {% endif %}
-    {% if skipped_foods or not_in_usda_line or lookup_failed_line or low_confidence_line %}
+    {% if skipped_foods or not_in_usda_line or lookup_failed_line or untranslated_line or low_confidence_line %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
         {% if not_in_usda_line %}<p>⚠ {{ not_in_usda_line }}</p>{% endif %}
         {% if lookup_failed_line %}<p>⚠ {{ lookup_failed_line }}</p>{% endif %}
+        {% if untranslated_line %}<p>⚠ {{ untranslated_line }}</p>{% endif %}
         {% if low_confidence_line %}<p>⚠ {{ low_confidence_line }}</p>{% endif %}
     </div>
     {% endif %}
@@ -427,6 +439,7 @@ def generate_html_report(result: dict, output_path: str) -> None:
         skipped_foods=coverage["skipped_foods"],
         not_in_usda_line=_not_in_usda_line(coverage),
         lookup_failed_line=_lookup_failed_line(coverage),
+        untranslated_line=_untranslated_line(coverage),
         low_confidence_line=_low_confidence_line(coverage),
         logged_fiber_line=_logged_fiber_line(coverage),
         custom_recipes=[

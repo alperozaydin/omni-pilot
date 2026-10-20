@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Collection
 from datetime import date
 from typing import Literal, TypedDict
 
@@ -60,6 +61,9 @@ class EnrichmentResult(TypedDict):
     # USDA could not be asked, or a recipe ingredient could not be fetched:
     # retried next run.
     lookup_failed: set[str]
+    # Gemini gave no translation this run: not searched in USDA under the
+    # German name (that finds nothing, or a wrong food), retried next run.
+    untranslated: set[str]
     # Resolved foods whose USDA match fits the logged macros poorly. They stay
     # in profiles and are counted; the report names them.
     low_confidence: dict[str, LowConfidenceMatch]
@@ -536,6 +540,7 @@ def enrich_all_foods(
     db: TinyDB,
     api_key: str,
     custom_foods: CustomFoods | None = None,
+    untranslated: Collection[str] = frozenset(),
 ) -> EnrichmentResult:
     """Enrich all foods with USDA micro data.
 
@@ -543,14 +548,16 @@ def enrich_all_foods(
     and goes into custom, whatever its mapping says (even "skip"). Otherwise:
     resolved foods go into profiles, foods mapped to "skip" into skipped,
     foods USDA has no match for into not_in_usda, and foods whose lookup
-    failed into lookup_failed. Resolved foods whose match is weak are also
-    listed in low_confidence.
+    failed into lookup_failed. Foods in `untranslated` (Gemini gave no
+    translation this run) go into untranslated without a USDA search or
+    cache write. Resolved foods whose match is weak are also listed in
+    low_confidence.
     """
     if custom_foods is None:
         custom_foods = no_custom_foods()
     result: EnrichmentResult = {
         "profiles": {}, "skipped": set(), "not_in_usda": set(), "lookup_failed": set(),
-        "low_confidence": {}, "custom": {},
+        "untranslated": set(), "low_confidence": {}, "custom": {},
     }
     fetched: dict[int, UsdaFood | None] = {}
 
@@ -568,6 +575,11 @@ def enrich_all_foods(
                 result["custom"][food_name] = _custom_food_match(
                     recipe_name, ingredients, logged_macros.get(food_name),
                 )
+            continue
+
+        if food_name in untranslated:
+            result["untranslated"].add(food_name)
+            logger.warning("'%s' has no translation — not looked up, retried next run", food_name)
             continue
 
         mapping = mappings.get(food_name, "")

@@ -44,15 +44,18 @@ def _make_analysis_result() -> dict:
         },
         "coverage": {
             "total_food_entries": 223,
-            "mapped_entries": 207,
+            "mapped_entries": 205,
             "skipped_entries": 12,
             "not_in_usda_entries": 3,
             "lookup_failed_entries": 1,
+            "untranslated_entries": 2,
             "skipped_foods": ["Quick Add", "Dessert, Prepared"],
             "not_in_usda_foods": ["Unknown Thing"],
             "lookup_failed_foods": ["Himbeeren"],
+            "untranslated_foods": ["Braune Linsen"],
             "not_in_usda_weight_pct": 2.4,
             "lookup_failed_weight_pct": 0.6,
+            "untranslated_weight_pct": 1.4,
             "low_confidence_foods": [],
             "low_confidence_weight_pct": 0.0,
             "custom_recipes": [],
@@ -295,12 +298,13 @@ class TestMissingFoodWarnings:
         monkeypatch.setenv("COLUMNS", "300")
         print_terminal_report(_make_analysis_result(), self.SETTINGS)
         out = capsys.readouterr().out
-        assert "207/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed)" in out
+        assert "205/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed, 2 not translated)" in out
         assert (
             "⚠ Not in USDA (2% of food weight): Unknown Thing — give them a custom recipe in custom_foods.yaml"
             in out
         )
         assert "⚠ Lookup failed (1% of food weight): Himbeeren — retried next run" in out
+        assert "⚠ Not translated (1% of food weight): Braune Linsen — Gemini failed, retried next run" in out
         assert "Unresolved" not in out
 
     def test_terminal_omits_lines_with_no_foods(self, capsys, monkeypatch):
@@ -308,18 +312,22 @@ class TestMissingFoodWarnings:
         result = _make_analysis_result()
         result["coverage"]["not_in_usda_foods"] = []
         result["coverage"]["lookup_failed_foods"] = []
+        result["coverage"]["untranslated_foods"] = []
         print_terminal_report(result, self.SETTINGS)
         out = capsys.readouterr().out
         assert "Not in USDA" not in out
         assert "Lookup failed" not in out
+        assert "Not translated" not in out
 
     def test_terminal_prints_brackets_in_food_names_literally(self, capsys, monkeypatch):
         monkeypatch.setenv("COLUMNS", "300")
         result = _make_analysis_result()
         result["coverage"]["not_in_usda_foods"] = ["Reis [bio]"]
         result["coverage"]["lookup_failed_foods"] = ["Tee [grün]"]
+        result["coverage"]["untranslated_foods"] = ["Reis [fit]"]
         print_terminal_report(result, self.SETTINGS)
         out = capsys.readouterr().out
+        assert "Not translated (1% of food weight): Reis [fit]" in out
         assert "Not in USDA (2% of food weight): Reis [bio]" in out
         assert "Lookup failed (1% of food weight): Tee [grün]" in out
 
@@ -328,24 +336,27 @@ class TestMissingFoodWarnings:
         generate_html_report(_make_analysis_result(), html_path)
         with open(html_path) as f:
             html = f.read()
-        assert "207/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed)" in html
+        assert "205/223 entries analyzed (12 skipped, 3 not in USDA, 1 lookup failed, 2 not translated)" in html
         assert (
             "⚠ Not in USDA (2% of food weight): Unknown Thing — give them a custom recipe in custom_foods.yaml"
             in html
         )
         assert "⚠ Lookup failed (1% of food weight): Himbeeren — retried next run" in html
+        assert "⚠ Not translated (1% of food weight): Braune Linsen — Gemini failed, retried next run" in html
         assert "Unresolved" not in html
 
     def test_html_omits_lines_with_no_foods(self, tmp_path):
         result = _make_analysis_result()
         result["coverage"]["not_in_usda_foods"] = []
         result["coverage"]["lookup_failed_foods"] = []
+        result["coverage"]["untranslated_foods"] = []
         html_path = str(tmp_path / "report.html")
         generate_html_report(result, html_path)
         with open(html_path) as f:
             html = f.read()
         assert "Not in USDA" not in html
         assert "Lookup failed" not in html
+        assert "Not translated" not in html
 
 
 class TestLoggedFiberNote:

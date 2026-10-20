@@ -192,25 +192,32 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     # 2. Resolve & Sync Mappings (Auto-Translate with Gemini if new foods found).
     # Foods covered by a custom recipe need no translation, so Gemini never sees them.
     translatable = [f for f in food_names if f not in custom_foods["by_food"]]
-    mappings = resolve_and_sync_mappings(translatable, db_path, mappings_path, settings)
+    mappings, untranslated = resolve_and_sync_mappings(translatable, db_path, mappings_path, settings)
 
     # 3. Enrich foods with USDA data
     print("Enriching foods with USDA data...")
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
-    outdated = count_outdated_matches(translatable, mappings, db)
+    outdated = count_outdated_matches([f for f in translatable if f not in untranslated], mappings, db)
     if outdated:
         print(f"  Re-matching {outdated} cached foods with updated USDA matching...")
     logged_macros = logged_macros_per_100g(entries)
-    enrichment = enrich_all_foods(food_names, mappings, logged_macros, db, api_key, custom_foods=custom_foods)
+    enrichment = enrich_all_foods(
+        food_names, mappings, logged_macros, db, api_key, custom_foods=custom_foods, untranslated=untranslated,
+    )
     resolved = len(enrichment["profiles"]) + len(enrichment["custom"])
     print(f"  {resolved}/{len(food_names)} foods resolved.")
-    if resolved == 0 and enrichment["lookup_failed"]:
+    if resolved == 0 and (enrichment["lookup_failed"] or enrichment["untranslated"]):
         # Every nutrient would read as deficient, from no data at all.
-        # The cause is not known here (key, quota, network, a wrong FDC ID in
-        # a recipe); the logged request errors carry it.
+        # The cause is not known here (key, quota, network, Gemini, a wrong
+        # FDC ID in a recipe); the logged request errors carry it.
+        failures = []
+        if enrichment["lookup_failed"]:
+            failures.append(f"{len(enrichment['lookup_failed'])} USDA lookups failed")
+        if enrichment["untranslated"]:
+            failures.append(f"{len(enrichment['untranslated'])} foods not translated")
         print(
-            f"Error: no food resolved and {len(enrichment['lookup_failed'])} USDA lookups failed — "
+            f"Error: no food resolved and {' and '.join(failures)} — "
             "the errors above say why. No report written."
         )
         sys.exit(1)

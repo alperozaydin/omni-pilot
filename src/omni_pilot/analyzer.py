@@ -56,11 +56,14 @@ class CoverageResult(TypedDict):
     skipped_entries: int
     not_in_usda_entries: int
     lookup_failed_entries: int
+    untranslated_entries: int
     skipped_foods: list[str]
     not_in_usda_foods: list[str]
     lookup_failed_foods: list[str]
+    untranslated_foods: list[str]
     not_in_usda_weight_pct: float
     lookup_failed_weight_pct: float
+    untranslated_weight_pct: float
     low_confidence_foods: list[LowConfidenceFood]
     low_confidence_weight_pct: float
     custom_recipes: list[CustomRecipeUse]
@@ -173,8 +176,8 @@ def analyze(
     contributes nothing to it, and its weight is booked as unmeasured rather
     than silently as 0.0. A custom food is counted part by part, each part
     weighing its share of the entry, so an ingredient missing a nutrient
-    books only its own share as unmeasured. A not-in-USDA or failed food is
-    unmeasured for every nutrient, but only on a day that is counted: a day
+    books only its own share as unmeasured. A not-in-USDA, failed or
+    untranslated food is unmeasured for every nutrient, but only on a day that is counted: a day
     with no resolved food leaves the average entirely.
 
     Fiber is the exception to "USDA per 100 g": an analysed entry whose
@@ -187,9 +190,11 @@ def analyze(
     skipped_entries = 0
     not_in_usda_entries = 0
     lookup_failed_entries = 0
+    untranslated_entries = 0
     skipped_food_names: set[str] = set()
     not_in_usda_food_names: set[str] = set()
     lookup_failed_food_names: set[str] = set()
+    untranslated_food_names: set[str] = set()
 
     # Collect all nutrient keys from reference_ranges
     nutrient_keys = list(ref_ranges["nutrients"].keys())
@@ -204,10 +209,11 @@ def analyze(
     low_confidence_weight_g: dict[str, float] = defaultdict(float)
     custom_weight_g: dict[str, float] = defaultdict(float)
     logged_fiber_total_g = 0.0
-    # Consumed grams of not-in-USDA and failed foods, per date and per kind
+    # Consumed grams of not-in-USDA, failed and untranslated foods, per date and per kind
     unresolved_weight_by_date_g: dict[str, float] = defaultdict(float)
     not_in_usda_weight_g = 0.0
     lookup_failed_weight_g = 0.0
+    untranslated_weight_g = 0.0
     dates: set[str] = set()
 
     for entry in entries:
@@ -216,7 +222,7 @@ def analyze(
 
         if parts is None:
             # A skipped food is excluded from coverage on both sides. A
-            # not-in-USDA or failed food is a hole in its day's totals, booked
+            # not-in-USDA, failed or untranslated food is a hole in its day's totals, booked
             # as unmeasured once the counted days are known.
             if food_name in enrichment["skipped"]:
                 skipped_entries += 1
@@ -226,6 +232,10 @@ def analyze(
                 not_in_usda_entries += 1
                 not_in_usda_food_names.add(food_name)
                 not_in_usda_weight_g += entry["total_weight_g"]
+            elif food_name in enrichment["untranslated"]:
+                untranslated_entries += 1
+                untranslated_food_names.add(food_name)
+                untranslated_weight_g += entry["total_weight_g"]
             else:
                 lookup_failed_entries += 1
                 lookup_failed_food_names.add(food_name)
@@ -352,7 +362,7 @@ def analyze(
         round(100.0 * sum(low_confidence_weight_g.values()) / analysed_weight_g, 1)
         if analysed_weight_g > 0 else 0.0
     )
-    food_weight_g = analysed_weight_g + not_in_usda_weight_g + lookup_failed_weight_g
+    food_weight_g = analysed_weight_g + not_in_usda_weight_g + lookup_failed_weight_g + untranslated_weight_g
     food_fiber_total_g = sum(daily_totals[d].get(LOGGED_NUTRIENT, 0.0) for d in sorted_dates)
     logged_fiber_pct = (
         round(100.0 * logged_fiber_total_g / food_fiber_total_g, 1) if food_fiber_total_g > 0 else None
@@ -375,11 +385,14 @@ def analyze(
             skipped_entries=skipped_entries,
             not_in_usda_entries=not_in_usda_entries,
             lookup_failed_entries=lookup_failed_entries,
+            untranslated_entries=untranslated_entries,
             skipped_foods=sorted(skipped_food_names),
             not_in_usda_foods=sorted(not_in_usda_food_names),
             lookup_failed_foods=sorted(lookup_failed_food_names),
+            untranslated_foods=sorted(untranslated_food_names),
             not_in_usda_weight_pct=food_weight_pct(not_in_usda_weight_g),
             lookup_failed_weight_pct=food_weight_pct(lookup_failed_weight_g),
+            untranslated_weight_pct=food_weight_pct(untranslated_weight_g),
             low_confidence_foods=low_confidence_foods,
             low_confidence_weight_pct=low_confidence_weight_pct,
             custom_recipes=_custom_recipe_uses(enrichment["custom"], custom_weight_g),
