@@ -33,15 +33,15 @@ def test_translate_new_foods_success(mocker):
 
 
 def test_translate_new_foods_retry_limit(mocker):
-    """Test that transient failures retry at most once (2 total attempts)."""
+    """Test that transient failures retry at most twice (3 total attempts)."""
     mock_post = mocker.patch("requests.post", side_effect=requests.RequestException("Network Error"))
     mocker.patch("time.sleep")
 
     with pytest.raises(requests.RequestException):
         translate_new_foods(["Milch"], api_key="fake_key")
 
-    # 1 initial attempt + 1 retry = 2 total attempts
-    assert mock_post.call_count == 2
+    # 1 initial attempt + 2 retries = 3 total attempts
+    assert mock_post.call_count == 3
 
 
 @pytest.mark.parametrize("error", [requests.ConnectionError("unreachable"), requests.ConnectTimeout("timed out")])
@@ -78,10 +78,40 @@ def test_translate_new_foods_gives_up_connecting_quickly(mocker):
 
     translate_new_foods(["Milch"], api_key="fake_key")
 
-    connect_timeout, read_timeout = mock_post.call_args.kwargs["timeout"]
+    connect_timeout, _ = mock_post.call_args.kwargs["timeout"]
     assert connect_timeout <= 5
+
+
+def test_translate_new_foods_cuts_off_a_stalled_request_and_asks_again(mocker):
+    """Gemini sometimes sends nothing for over a minute; a fresh request usually answers in seconds.
+
+    On the iPhone two 60s attempts both timed out, leaving two foods untranslated
+    after a two-minute wait.
+    """
+    mock_post = mocker.patch(
+        "requests.post",
+        side_effect=[requests.ReadTimeout("Read timed out."), _gemini_reply(mocker, ["milk"])],
+    )
+    mocker.patch("time.sleep")
+
+    assert translate_new_foods(["Milch"], api_key="fake_key") == ["milk"]
+
+    _, read_timeout = mock_post.call_args.kwargs["timeout"]
     # Gemini takes ~5-20s to answer for a few foods at low thinking; leave it room.
-    assert read_timeout >= 60
+    assert 25 <= read_timeout <= 30
+
+
+def test_translate_new_foods_gives_up_on_a_silent_gemini_sooner_than_before(mocker):
+    """Every attempt timing out costs at most ~1.5 minutes, not the two minutes of 2 x 60s."""
+    mock_post = mocker.patch("requests.post", side_effect=requests.ReadTimeout("Read timed out."))
+    sleep = mocker.patch("time.sleep")
+
+    with pytest.raises(requests.ReadTimeout):
+        translate_new_foods(["Milch"], api_key="fake_key")
+
+    _, read_timeout = mock_post.call_args.kwargs["timeout"]
+    waited = read_timeout * mock_post.call_count + sum(call.args[0] for call in sleep.call_args_list)
+    assert waited <= 100
 
 
 def test_translate_new_foods_keeps_gemini_thinking_low(mocker):
