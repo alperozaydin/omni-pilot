@@ -6,9 +6,12 @@ import pytest
 import yaml
 
 from omni_pilot.config import (
+    S3_ENV_VARS,
+    S3ConfigError,
     get_nutrient_target,
     load_food_mappings,
     load_reference_ranges,
+    load_s3_config,
     load_settings,
     load_supplements,
 )
@@ -171,3 +174,61 @@ class TestResolvePath:
         from omni_pilot.config import resolve_path
         result = resolve_path("database_path", "db/food_db.json", settings=None)
         assert result == "db/food_db.json"
+
+
+FULL = {"bucket": "omni-pilot-data", "region": "eu-central-1", "access_key_id": "AKIA1", "secret_access_key": "s3cr3t"}
+ENV = {"OMNI_PILOT_S3_BUCKET": "omni-pilot-data", "OMNI_PILOT_S3_REGION": "eu-central-1",
+       "OMNI_PILOT_S3_ACCESS_KEY_ID": "AKIA2", "OMNI_PILOT_S3_SECRET_ACCESS_KEY": "envsecret"}
+
+
+class TestLoadS3Config:
+    def test_not_configured_without_section_or_env(self):
+        assert load_s3_config({"usda_api_key": "k"}, environ={}) is None
+
+    def test_empty_section_without_env_is_not_configured(self):
+        assert load_s3_config({"s3": None}, environ={}) is None
+
+    def test_no_settings_at_all_is_not_configured(self):
+        assert load_s3_config(None, environ={}) is None
+
+    def test_section_from_settings(self):
+        cfg = load_s3_config({"s3": FULL}, environ={})
+        assert (cfg.bucket, cfg.region, cfg.access_key_id, cfg.key_source) == (
+            "omni-pilot-data", "eu-central-1", "AKIA1", "settings.yaml")
+
+    def test_all_values_from_env_with_empty_section(self):
+        cfg = load_s3_config({"s3": None}, environ=ENV)
+        assert cfg.access_key_id == "AKIA2" and cfg.key_source == "OMNI_PILOT_S3_ACCESS_KEY_ID"
+
+    def test_each_env_var_wins_over_settings(self):
+        for name, var in S3_ENV_VARS.items():
+            cfg = load_s3_config({"s3": FULL}, environ={var: "from-env"})
+            assert getattr(cfg, name) == "from-env"
+
+    def test_empty_env_var_counts_as_unset(self):
+        cfg = load_s3_config({"s3": FULL}, environ={"OMNI_PILOT_S3_BUCKET": ""})
+        assert cfg.bucket == "omni-pilot-data"
+
+    def test_missing_value_stops_and_names_both_places(self):
+        partial = {k: v for k, v in FULL.items() if k != "region"}
+        with pytest.raises(S3ConfigError) as e:
+            load_s3_config({"s3": partial}, environ={})
+        assert "s3.region" in str(e.value) and "OMNI_PILOT_S3_REGION" in str(e.value)
+
+    def test_one_env_var_alone_is_incomplete_not_unconfigured(self):
+        with pytest.raises(S3ConfigError):
+            load_s3_config({}, environ={"OMNI_PILOT_S3_BUCKET": "omni-pilot-data"})
+
+    def test_placeholder_counts_as_missing(self):
+        with pytest.raises(S3ConfigError):
+            load_s3_config({"s3": {**FULL, "access_key_id": "YOUR_ACCESS_KEY_ID"}}, environ={})
+
+    def test_no_secret_in_error_or_repr(self):
+        with pytest.raises(S3ConfigError) as e:
+            load_s3_config({"s3": {**FULL, "region": ""}}, environ={})
+        assert "s3cr3t" not in str(e.value)
+        assert "s3cr3t" not in repr(load_s3_config({"s3": FULL}, environ={}))
+
+    def test_example_settings_are_not_configured(self):
+        with open("config/settings.example.yaml") as f:
+            assert load_s3_config(yaml.safe_load(f), environ={}) is None
