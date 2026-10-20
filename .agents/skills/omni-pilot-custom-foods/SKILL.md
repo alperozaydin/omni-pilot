@@ -17,6 +17,17 @@ for the logged foods it lists. The app only reads the file; you write it, so eve
 ID and amount you put there must be checked first. The format and rules are in
 the repo: `config/custom_foods.example.yaml` and `src/omni_pilot/custom_foods.py`.
 
+## Before any work
+
+The app's data (database, mappings, recipes, exports) lives in S3; the repo holds
+a local working copy. Before anything else, from the omni-pilot repo root, run
+`make pull` (`pull --exports`). It replaces the local database and config files
+with S3's and fetches missing exports into `data/`. If it fails, stop and show
+the user the message; do not work on stale local files.
+
+The same steps work in a Claude cloud session once its environment holds the
+`OMNI_PILOT_S3_*` variables.
+
 ## The tool
 
 `scripts/recipe_tool.py` (next to this file) uses the app's own loader, USDA
@@ -35,8 +46,8 @@ PYTHONPATH=src uv run python $T check                   # validate + macro-check
 PYTHONPATH=src uv run python $T check draft.yaml        # same for a draft
 ```
 
-Logged macros come from every MacroFactor export in `data/` and in the `data/`
-beside the database (iCloud). Add more with `--exports 'path/*.xlsx'`.
+Logged macros come from every MacroFactor export in `data/`, the local working
+copy that `make pull` fills from S3. Add more with `--exports 'path/*.xlsx'`.
 
 ## Check-up
 
@@ -81,6 +92,9 @@ are new or whose match the app has changed since it was approved (shown with
 - If the user says a listed match is fine, approve it.
 - Report approvals as a count ("approved 97 matches") and mention that
   `review --all` shows them.
+- After approving, run `make push` (the rules of Workflow step 6 apply), even
+  when no recipe follows: the marks live in the database and a later pull or
+  analyze would overwrite them.
 
 Foods with "not in any export" were logged in older exports only; mention
 them separately and lower. Give the list first, then fix the ones the user picks
@@ -102,9 +116,16 @@ database's copy of the translation overrides the file for any food already seen.
 4. **Write a draft** in the scratchpad and run `check` on it until every food
    is ✓ (at most 25% off, the app's `GOOD_DISTANCE`).
 5. **Merge into the real file** (`custom_foods_path` in `config/settings.yaml`,
-   usually in iCloud). Keep existing recipes and comments; add under the
-   matching section. Run `check` on the real file; it must exit 0.
-6. **Report** each food's result (before → after), and every assumption made.
+   the local working copy kept in sync with S3). Keep existing recipes and
+   comments; add under the matching section. Run `check` on the real file; it
+   must exit 0.
+6. **Push.** After your last change to `custom_foods.yaml` or the review marks,
+   run `make push`, before suggesting or running `make analyze`: analyze pulls
+   first, so an unpushed edit would be overwritten. If the push is refused
+   ("changed in S3 since it was downloaded"), tell the user the message. Do not
+   retry or pull by yourself: your edits were based on the old copy, and
+   `make pull` would replace them. The user decides whether to pull and redo them.
+7. **Report** each food's result (before → after), and every assumption made.
 
 ## Choosing ingredients
 
