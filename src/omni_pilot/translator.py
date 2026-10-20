@@ -24,8 +24,12 @@ logger = logging.getLogger(__name__)
 # resolves to, tried in turn, and Gemini's host resolves to 16 of them: at 30s
 # each, an unreachable network kept the CLI waiting for minutes. The read
 # timeout leaves room for the model to think (~5-20s for a few foods at low
-# thinking, see GEMINI_THINKING_LEVEL).
-GEMINI_TIMEOUT = (5, 60)
+# thinking, see GEMINI_THINKING_LEVEL) but not for a stalled request: Gemini
+# sometimes sends nothing for over a minute, while a fresh request answers in
+# seconds, so a stall is cut off and asked again (GEMINI_ATTEMPTS). Two 60s
+# attempts once both timed out on the iPhone.
+GEMINI_TIMEOUT = (5, 30)
+GEMINI_ATTEMPTS = 3
 
 # gemini-flash-latest thinks for 30-60s at its default level before sending a
 # byte, which ran into the read timeout on the iPhone; "low" answers in 5-20s
@@ -76,7 +80,7 @@ Input foods:
 
 
 @retry(
-    stop=stop_after_attempt(2),
+    stop=stop_after_attempt(GEMINI_ATTEMPTS),
     wait=wait_exponential(multiplier=1, min=2, max=5),
     # A server that can't be reached now won't be two seconds later either.
     retry=(
