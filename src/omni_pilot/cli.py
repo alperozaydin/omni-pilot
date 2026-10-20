@@ -12,7 +12,9 @@ from tinydb import TinyDB
 
 from omni_pilot.analyzer import analyze
 from omni_pilot.config import (
+    S3ConfigError,
     load_reference_ranges,
+    load_s3_config,
     load_settings,
     load_supplements,
     resolve_path,
@@ -23,6 +25,17 @@ from omni_pilot.matcher import logged_macros_per_100g
 from omni_pilot.net import prefer_ipv4_connections
 from omni_pilot.parser import check_last_day, extract_unique_foods, parse_daily_expenditure, parse_food_log
 from omni_pilot.reporter import generate_html_report, print_terminal_report
+from omni_pilot.s3 import S3Client, S3Error
+from omni_pilot.sync import (
+    DataFile,
+    SyncError,
+    data_files,
+    pull,
+    pull_exports,
+    push,
+    state_path,
+    upload_export,
+)
 from omni_pilot.translator import resolve_and_sync_mappings
 
 logger = logging.getLogger(__name__)
@@ -34,6 +47,72 @@ DEFAULT_MAPPINGS = "config/food_mappings.yaml"
 DEFAULT_SUPPLEMENTS = "config/supplements.yaml"
 DEFAULT_DB = "db/food_db.json"
 DEFAULT_CUSTOM_FOODS = "config/custom_foods.yaml"
+
+
+def _s3_context(settings: dict) -> tuple[S3Client, list[DataFile], str] | None:
+    """The S3 client, the data files and the sync state file; None when S3 is not configured."""
+    config = load_s3_config(settings)
+    if config is None:
+        return None
+    db_path = resolve_path("database_path", DEFAULT_DB, settings)
+    mappings_path = resolve_path("mappings_path", DEFAULT_MAPPINGS, settings)
+    custom_foods_path = resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings)
+    return S3Client(config), data_files(db_path, mappings_path, custom_foods_path), state_path(db_path)
+
+
+def _require_s3_context(settings: dict) -> tuple[S3Client, list[DataFile], str]:
+    """Like _s3_context, but a missing or broken S3 setup ends the command with exit code 1."""
+    try:
+        context = _s3_context(settings)
+    except S3ConfigError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    if context is None:
+        print("Error: S3 is not configured (s3 in settings.yaml or OMNI_PILOT_S3_* variables).")
+        sys.exit(1)
+    return context
+
+
+def cmd_pull(args: argparse.Namespace) -> None:
+    """Download the data files (and with --exports the MacroFactor exports) from S3."""
+    settings = load_settings(args.settings or DEFAULT_SETTINGS)
+    client, files, state_file = _require_s3_context(settings)
+    try:
+        labels = pull(client, files, state_file)
+        pulled_exports = pull_exports(client) if args.exports else None
+    except (S3Error, SyncError) as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    found = ", ".join(labels) if labels else "nothing there yet"
+    print(f"S3: pulled from {client.config.bucket} ({found})")
+    if pulled_exports is not None:
+        for name in pulled_exports:
+            print(f"  export downloaded: {name}")
+        if not pulled_exports:
+            print("  no new exports")
+
+
+def cmd_push(args: argparse.Namespace) -> None:
+    """Upload the named exports, then the data files that changed."""
+    settings = load_settings(args.settings or DEFAULT_SETTINGS)
+    client, files, state_file = _require_s3_context(settings)
+    try:
+        # Exports first: if one fails, no data file goes up.
+        for path in args.export or []:
+            result = upload_export(client, path)
+            if result is None:
+                print(f"  {path}: no food entries, not uploaded")
+                continue
+            key, uploaded = result
+            print(f"  {key}: {'uploaded' if uploaded else 'already in S3'}")
+        labels = push(client, files, state_file)
+    except (S3Error, SyncError) as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    for label in labels:
+        print(f"  {label}: uploaded")
+    if not labels:
+        print(f"S3: data files in {client.config.bucket} are up to date")
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
@@ -173,10 +252,30 @@ def main() -> None:
         help=f"Path to supplements (default: {DEFAULT_SUPPLEMENTS})",
     )
 
+    pull_parser = subparsers.add_parser("pull", help="Download the data files from S3")
+    pull_parser.add_argument(
+        "--exports", action="store_true", help="Also download MacroFactor exports missing from data/"
+    )
+    pull_parser.add_argument(
+        "--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})"
+    )
+
+    push_parser = subparsers.add_parser("push", help="Upload changed data files to S3")
+    push_parser.add_argument(
+        "--export", action="append", metavar="FILE", help="MacroFactor export to upload first (repeatable)"
+    )
+    push_parser.add_argument(
+        "--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})"
+    )
+
     args = parser.parse_args()
 
     if args.command == "analyze":
         cmd_analyze(args)
+    elif args.command == "pull":
+        cmd_pull(args)
+    elif args.command == "push":
+        cmd_push(args)
 
 
 if __name__ == "__main__":

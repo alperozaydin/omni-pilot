@@ -482,3 +482,153 @@ class TestCLIAnalyze:
 
         assert mock_analyze.call_args.args[0] == entries
         assert "No expenditure for 2026-08-09" in capsys.readouterr().out
+
+
+class TestCLIPullPush:
+    @pytest.fixture(autouse=True)
+    def _isolated(self, monkeypatch, tmp_path):
+        for var in ("BUCKET", "REGION", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
+            monkeypatch.delenv(f"OMNI_PILOT_S3_{var}", raising=False)
+        monkeypatch.chdir(tmp_path)  # pull --exports writes to ./data
+        self.db = tmp_path / "db" / "food_db.json"
+        self.mappings = tmp_path / "food_mappings.yaml"
+        self.recipes = tmp_path / "recipes.yaml"
+
+    def settings(self, tmp_path, s3=None):
+        path = tmp_path / "settings.yaml"
+        body = {
+            "database_path": str(self.db),
+            "mappings_path": str(self.mappings),
+            "custom_foods_path": str(self.recipes),
+        }
+        if s3 is not None:
+            body["s3"] = s3
+        path.write_text(yaml.dump(body))
+        return str(path)
+
+    FULL_S3 = {"bucket": "omni-pilot-data", "region": "eu-central-1", "access_key_id": "AKIA", "secret_access_key": "x"}
+
+    def run(self, mocker, *argv):
+        mocker.patch("sys.argv", ["omni_pilot", *argv])
+        main()
+
+    def test_pull_not_configured_exits_1(self, mocker, tmp_path, capsys):
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, "pull", "--settings", self.settings(tmp_path))
+        assert exc.value.code == 1
+        assert "S3 is not configured" in capsys.readouterr().out
+
+    def test_pull_incomplete_settings_exits_1(self, mocker, tmp_path, capsys):
+        s3 = {"bucket": "omni-pilot-data"}
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, "pull", "--settings", self.settings(tmp_path, s3))
+        assert exc.value.code == 1
+        assert "region" in capsys.readouterr().out
+
+    def test_pull_prints_labels_and_exits_0(self, mocker, tmp_path, capsys):
+        from tests.helpers import FakeS3Client
+
+        fake = FakeS3Client({
+            "food_db.json": (b"{}", '"1"'),
+            "food_mappings.yaml": (b"mappings: {}\n", '"2"'),
+            "custom_foods.yaml": (b"{}\n", '"3"'),
+        }, bucket="omni-pilot-data")
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        self.run(mocker, "pull", "--settings", self.settings(tmp_path, self.FULL_S3))
+        assert "S3: pulled from omni-pilot-data (database, mappings, recipes)" in capsys.readouterr().out
+        assert self.db.read_bytes() == b"{}"
+
+    def test_pull_exports_flag_fetches_exports(self, mocker, tmp_path, capsys):
+        from tests.helpers import FakeS3Client
+
+        fake = FakeS3Client({"food_db.json": (b"{}", '"0"'), "exports/a.xlsx": (b"xlsx", '"1"')})
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        self.run(mocker, "pull", "--exports", "--settings", self.settings(tmp_path, self.FULL_S3))
+        assert (tmp_path / "data" / "a.xlsx").read_bytes() == b"xlsx"
+        assert "a.xlsx" in capsys.readouterr().out
+
+    def test_pull_without_exports_flag_lists_nothing(self, mocker, tmp_path):
+        from tests.helpers import FakeS3Client
+
+        fake = FakeS3Client({"food_db.json": (b"{}", '"0"'), "exports/a.xlsx": (b"xlsx", '"1"')})
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        self.run(mocker, "pull", "--settings", self.settings(tmp_path, self.FULL_S3))
+        assert not (tmp_path / "data").exists()
+        assert ("list", "exports/") not in fake.calls
+
+    def test_pull_s3_error_prints_message_exits_1(self, mocker, tmp_path, capsys):
+        from tests.helpers import FakeS3Client
+
+        fake = FakeS3Client()
+        fake.fail_get_on = "food_db.json"
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, "pull", "--settings", self.settings(tmp_path, self.FULL_S3))
+        assert exc.value.code == 1
+        assert "S3 not reachable" in capsys.readouterr().out
+
+    def export(self, tmp_path, name="e.xlsx"):
+        from tests.helpers import food_row, write_food_log
+
+        return write_food_log(tmp_path / name, [food_row("Apple")])
+
+    def test_push_uploads_exports_before_data_files(self, mocker, tmp_path, capsys):
+        from tests.helpers import FakeS3Client
+
+        self.db.parent.mkdir()
+        self.db.write_text("{}")
+        fake = FakeS3Client()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        path = self.export(tmp_path)
+        self.run(mocker, "push", "--export", path, "--settings", self.settings(tmp_path, self.FULL_S3))
+        keys = [k for op, k in fake.calls if op == "put"]
+        assert keys[0].startswith("exports/")
+        assert keys[1] == "food_db.json"
+        out = capsys.readouterr().out
+        assert "uploaded" in out and "database" in out
+
+    def test_push_reports_export_already_in_s3(self, mocker, tmp_path, capsys):
+        from tests.helpers import FakeS3Client
+
+        fake = FakeS3Client()
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        path = self.export(tmp_path)
+        argv = ["push", "--export", path, "--settings", self.settings(tmp_path, self.FULL_S3)]
+        self.run(mocker, *argv)
+        capsys.readouterr()
+        self.run(mocker, *argv)
+        assert "already in S3" in capsys.readouterr().out
+
+    def test_push_export_failure_pushes_no_data_file(self, mocker, tmp_path, capsys):
+        from omni_pilot.s3 import S3Error
+        from tests.helpers import FakeS3Client
+
+        self.db.parent.mkdir()
+        self.db.write_text("{}")
+        fake = FakeS3Client()
+        orig_put = fake.put
+
+        def failing_put(key, body, **kw):
+            if key.startswith("exports/"):
+                raise S3Error("network", "S3 not reachable")
+            return orig_put(key, body, **kw)
+
+        fake.put = failing_put
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, "push", "--export", self.export(tmp_path),
+                     "--settings", self.settings(tmp_path, self.FULL_S3))
+        assert exc.value.code == 1
+        assert "food_db.json" not in [k for _, k in fake.calls]
+
+    def test_push_conflict_exits_1_with_message(self, mocker, tmp_path, capsys):
+        from tests.helpers import FakeS3Client
+
+        self.db.parent.mkdir()
+        self.db.write_text("{}")
+        fake = FakeS3Client({"food_db.json": (b"other", '"x"')})  # no state: if_none_match conflicts
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        with pytest.raises(SystemExit) as exc:
+            self.run(mocker, "push", "--settings", self.settings(tmp_path, self.FULL_S3))
+        assert exc.value.code == 1
+        assert "changed in S3" in capsys.readouterr().out

@@ -1,10 +1,12 @@
-.PHONY: help analyze test lint lint-fix sync-iphone infra-diff infra-deploy
+.PHONY: help analyze pull push test lint lint-fix sync-iphone infra-diff infra-deploy
 
 ICLOUD_DEST := $(HOME)/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/omni-pilot
 
 help:
 	@echo "Available commands:"
 	@echo "  make analyze FILE=<path> - Analyze micronutrient intake (with HTML report)"
+	@echo "  make pull                - Download data files and MacroFactor exports from S3"
+	@echo "  make push                - Upload changed data files to S3"
 	@echo "  make test                - Run tests with pytest"
 	@echo "  make lint                - Lint code with ruff"
 	@echo "  make lint-fix            - Lint and auto-fix issues with ruff"
@@ -18,6 +20,12 @@ ifndef FILE
 endif
 	@test -f "$(FILE)" || (echo "Error: File '$(FILE)' does not exist." && exit 1)
 	PYTHONPATH=src uv run python -m omni_pilot.cli analyze "$(FILE)" --html
+
+pull:
+	PYTHONPATH=src uv run python -m omni_pilot.cli pull --exports
+
+push:
+	PYTHONPATH=src uv run python -m omni_pilot.cli push
 
 test:
 	uv run pytest
