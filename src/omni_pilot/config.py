@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 import yaml
 
@@ -100,4 +102,61 @@ def resolve_path(
     return resolved
 
 
+S3_ENV_VARS: dict[str, str] = {
+    "bucket": "OMNI_PILOT_S3_BUCKET",
+    "region": "OMNI_PILOT_S3_REGION",
+    "access_key_id": "OMNI_PILOT_S3_ACCESS_KEY_ID",
+    "secret_access_key": "OMNI_PILOT_S3_SECRET_ACCESS_KEY",
+}
 
+
+class S3ConfigError(Exception):
+    """The S3 connection is partly configured: a value is missing."""
+
+
+@dataclass(frozen=True)
+class S3Config:
+    bucket: str
+    region: str
+    # "settings.yaml" or "OMNI_PILOT_S3_ACCESS_KEY_ID": where the access key id came from.
+    access_key_id: str
+    secret_access_key: str = field(repr=False)
+    key_source: str
+
+
+def _set_value(value: object) -> str | None:
+    """Return the stripped string, or None when the value is not set."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def load_s3_config(
+    settings: dict | None,
+    environ: Mapping[str, str] = os.environ,
+) -> S3Config | None:
+    """Read the S3 connection from settings.yaml's `s3` section and OMNI_PILOT_S3_* variables.
+
+    An environment variable wins over settings.yaml; an empty one counts as unset.
+    Returns None when none of the four values is set (S3 not configured).
+    Raises S3ConfigError when some are set and others are missing.
+    """
+    section = (settings or {}).get("s3") or {}
+    values: dict[str, str | None] = {}
+    for name, var in S3_ENV_VARS.items():
+        values[name] = _set_value(environ.get(var)) or _set_value(section.get(name))
+
+    if all(v is None for v in values.values()):
+        return None
+
+    for name, value in values.items():
+        if value is None or value.startswith("YOUR_"):
+            raise S3ConfigError(
+                f"S3 setting '{name}' is missing: set s3.{name} in settings.yaml "
+                f"or {S3_ENV_VARS[name]}"
+            )
+
+    key_var = S3_ENV_VARS["access_key_id"]
+    key_source = key_var if _set_value(environ.get(key_var)) else "settings.yaml"
+    return S3Config(key_source=key_source, **values)

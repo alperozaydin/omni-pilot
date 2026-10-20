@@ -15,9 +15,11 @@ database_path: "db/food_db.json"
 mappings_path: "config/food_mappings.yaml"
 # Optional custom food recipes (see config/custom_foods.example.yaml)
 custom_foods_path: "config/custom_foods.yaml"
-# Example for macOS iCloud sync:
-# database_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/db/food_db.json"
-# mappings_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/config/food_mappings.yaml"
-# custom_foods_path: "~/Library/Mobile Documents/com~apple~CloudDocs/OmniPilot/config/custom_foods.yaml"
-
-
+# S3 storage for the database, mappings and custom foods (create the bucket with infra/).
+# Alternative for cloud sessions: the OMNI_PILOT_S3_BUCKET, OMNI_PILOT_S3_REGION,
+# OMNI_PILOT_S3_ACCESS_KEY_ID and OMNI_PILOT_S3_SECRET_ACCESS_KEY environment variables.
+# s3:
+#   bucket: "omni-pilot-data"
+#   region: "eu-central-1"
+#   access_key_id: "YOUR_ACCESS_KEY_ID"
+#   secret_access_key: "YOUR_SECRET_ACCESS_KEY"

@@ -1,0 +1,1 @@
+{"app": "uv run --group infra python app.py"}
