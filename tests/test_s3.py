@@ -5,7 +5,7 @@ import pytest
 import requests
 from requests.structures import CaseInsensitiveDict
 
-from omni_pilot.config import S3Config
+from omni_pilot.config import S3Config, load_s3_config
 from omni_pilot.s3 import S3Client, S3Error, authorization_header
 
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -63,6 +63,20 @@ def test_signature_matches_aws_list_objects_example():
     assert header.endswith(
         "Signature=34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7"
     )
+
+
+def test_guard_blocks_real_request_with_s3_variables_set(monkeypatch):
+    for var, value in [
+        ("BUCKET", "x"),
+        ("REGION", "eu-central-1"),
+        ("ACCESS_KEY_ID", "x"),
+        ("SECRET_ACCESS_KEY", "x"),
+    ]:
+        monkeypatch.setenv(f"OMNI_PILOT_S3_{var}", value)
+    config = load_s3_config({})
+    assert config is not None
+    with pytest.raises(AssertionError, match="real S3 request in a test"):
+        S3Client(config).get("food_db.json")
 
 
 def fake(status=200, body=b"", headers=None):

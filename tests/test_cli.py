@@ -20,13 +20,6 @@ def _custom_foods_in_tmp(monkeypatch, tmp_path):
     monkeypatch.setattr("omni_pilot.cli.DEFAULT_CUSTOM_FOODS", str(tmp_path / "custom_foods.yaml"))
 
 
-@pytest.fixture(autouse=True)
-def _no_s3_from_environment(monkeypatch):
-    """Keep the shell's OMNI_PILOT_S3_* variables out: with them, analyze would talk to real S3."""
-    for var in ("BUCKET", "REGION", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
-        monkeypatch.delenv(f"OMNI_PILOT_S3_{var}", raising=False)
-
-
 class TestCLIHelp:
     def test_help_exits_cleanly(self, mocker):
         mocker.patch("sys.argv", ["omni_pilot", "--help"])
