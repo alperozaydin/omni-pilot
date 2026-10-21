@@ -500,7 +500,7 @@ class TestCLIAnalyze:
         _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Reis": "rice, cooked"})
         entries = [
             food_entry("Reis", date="2026-08-08", calories_kcal=2500.0),
-            food_entry("Reis", date="2026-08-09", calories_kcal=1300.0),
+            food_entry("Reis", date="2026-08-09", calories_kcal=2300.0),
         ]
         mocker.patch("omni_pilot.cli.parse_food_log", return_value=entries)
         mocker.patch("omni_pilot.cli.parse_daily_expenditure", return_value={"2026-08-09": 2570.0})

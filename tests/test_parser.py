@@ -175,24 +175,36 @@ class TestCheckLastDay:
     def _entries(self, kcal_by_date: dict[str, float]) -> list:
         return [food_entry("Reis", date=d, calories_kcal=kcal) for d, kcal in kcal_by_date.items()]
 
-    def test_last_day_under_half_of_expenditure_is_partial(self):
+    def test_last_day_under_70_percent_of_expenditure_is_partial(self):
         entries = self._entries({"2026-08-08": 2500.0, "2026-08-09": 1196.0})
         check = check_last_day(entries, {"2026-08-08": 2570.0, "2026-08-09": 2570.0})
         assert check == {"date": "2026-08-09", "logged_kcal": 1196.0, "expenditure_kcal": 2570.0, "partial": True}
 
-    def test_last_day_at_or_over_half_of_expenditure_counts(self):
-        entries = self._entries({"2026-08-08": 2500.0, "2026-08-09": 1285.0})
+    def test_lunch_only_export_just_over_half_is_partial(self):
+        """The 2026-10-21 export: breakfast and lunch logged, 52% of the expenditure."""
+        entries = self._entries({"2026-10-20": 2922.0, "2026-10-21": 1410.0})
+        check = check_last_day(entries, {"2026-10-21": 2712.0})
+        assert check is not None and check["partial"] is True
+
+    def test_last_day_at_or_over_70_percent_of_expenditure_counts(self):
+        entries = self._entries({"2026-08-08": 2500.0, "2026-08-09": 1800.0})
+        check = check_last_day(entries, {"2026-08-09": 2570.0})
+        assert check is not None and check["partial"] is False
+
+    def test_lowest_full_day_seen_counts(self):
+        """The lowest full day in the exports so far reached 79% of its expenditure."""
+        entries = self._entries({"2026-08-08": 2500.0, "2026-08-09": 2030.0})
         check = check_last_day(entries, {"2026-08-09": 2570.0})
         assert check is not None and check["partial"] is False
 
     def test_sums_every_entry_of_the_last_day(self):
         entries = self._entries({"2026-08-08": 2500.0}) + [
-            food_entry("Reis", date="2026-08-09", calories_kcal=700.0),
-            food_entry("Quick Add", date="2026-08-09", calories_kcal=700.0),
+            food_entry("Reis", date="2026-08-09", calories_kcal=1000.0),
+            food_entry("Quick Add", date="2026-08-09", calories_kcal=900.0),
         ]
         check = check_last_day(entries, {"2026-08-09": 2570.0})
         assert check is not None
-        assert check["logged_kcal"] == 1400.0
+        assert check["logged_kcal"] == 1900.0
         assert check["partial"] is False
 
     def test_last_day_without_expenditure_counts(self):

@@ -39,7 +39,9 @@ class LastDayCheck(TypedDict):
 
 
 # A last day logged under this share of its expenditure is taken as still in progress.
-PARTIAL_DAY_SHARE = 0.5
+# Full days in the exports so far reached at least 79%; the partly logged last
+# days 47% and 52% (a lunch-time export), which a cutoff of half let through.
+PARTIAL_DAY_SHARE = 0.7
 
 
 # Column indices in the "Food Log" sheet (0-indexed)
