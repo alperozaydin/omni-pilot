@@ -127,6 +127,8 @@ After enrichment and before analysis, each placeholder entry gets its grams fitt
 
 Each entry is fitted on its own macros, not the food's sums, so two different servings of one food get their own grams.
 
+Estimated grams are never stored, not in the food database, S3 or the export. Each run fits them again from the export's logged macros and the current match. The fit is cheap and asks USDA nothing. A food's database entry describes the food, not a meal: the same food eaten twice has two weights. Fitting every run also means a recipe added later applies to older exports too.
+
 - **Successful fit:** the entry's `total_weight_g` becomes the estimate, and the logged figure is kept beside it (for example `logged_weight_g`), with a marker that the weight was estimated.
 - **No fit possible:** a missing macro, or a legacy cache entry without `usda_macros` (kept as `unverified`). The entry keeps its logged weight and is reported as "weight not estimated".
 
