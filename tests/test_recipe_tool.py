@@ -501,6 +501,24 @@ class TestReview:
         assert "Risotto Alla Milanese" in before
         assert after == before
 
+    def test_marks_a_food_left_for_the_user(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424}, {**LENTILS_NOT_FOUND, "deferred_query": "lentils"})
+
+        code, out = run("review")
+
+        assert code == 0
+        assert ("matched to  : Egg, whole, cooked, hard-boiled  [good, off 5%]\n"
+                "    left for the user by the daily review\n") in out
+        assert "    looked up as: lentils\n    left for the user by the daily review\n" in out
+
+    def test_a_stale_deferral_is_not_marked(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 999})
+
+        _, out = run("review")
+
+        assert "Boiled Eggs" in out
+        assert "left for the user" not in out
+
     def test_lists_an_approved_match_that_turned_weak(self, ws, run):
         # Same USDA food, but a re-pick now scores it weak: it needs a recipe or the user again.
         ws.add({**EGGS, "confidence": "weak", "macro_distance": 0.34, "reviewed_fdc_id": 173424})
