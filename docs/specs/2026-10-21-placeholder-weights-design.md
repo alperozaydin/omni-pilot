@@ -2,7 +2,7 @@
 
 **Document Version:** 1.0
 **Date:** 2026-10-21
-**Status:** Draft, awaiting approval
+**Status:** Approved (2026-10-21)
 **Builds on:** BAR-72 (candidate matching, `match_version`), the custom-foods recipes, BAR-86 (logged fiber), BAR-87 (partly logged last day)
 
 ---
@@ -156,7 +156,7 @@ The exact wording and layout are the builder's call, within the existing style o
 - Splitting a mixed dish into ingredients automatically.
 - Detecting a placeholder weight that is physically possible (the Double Cheeseburger).
 - EU/DGE reference targets.
-- **The custom-foods skill.** Its `SKILL.md` and `recipe_tool.py` (a separate repo, installed into `.claude/skills/`) tell the reader that impossible macros stay flagged until the weight is fixed in MacroFactor. That guidance becomes outdated and should be updated afterwards. The comment in the user's `custom_foods.yaml` (stored in S3, not in git) also becomes outdated.
+- Changes to the custom-foods skill within this step. They are step 2 (§8). The outdated comment in the user's `custom_foods.yaml` (stored in S3, not in git) is updated when the skill next handles those foods.
 - Re-reading MacroFactor's other micronutrient columns. Only fiber comes from the export, as today.
 
 ---
@@ -207,3 +207,26 @@ The exact wording and layout are the builder's call, within the existing style o
 A real `analyze` with S3 configured saves the re-picked database to S3. Ask the user before running it.
 
 **Docs:** in `CLAUDE.md`, describe the new parser field, the matcher's fitted matching and `GOOD_FIT_DISTANCE`, the estimation step in the data flow, the new report line and the cache field with its re-pick rule (in Key invariants).
+
+---
+
+## 8. Step 2: The Custom-Foods Skill
+
+This starts once steps 1–7 are merged. The app is correct without it, and recipes need no change: they are shares, which the app applies to whatever grams it estimates. Only the skill's **check** still divides by the logged 100 g. For a photo-logged dish it reports impossible macros, and its instructions say the food "stays flagged until the weight is fixed in MacroFactor", so it disagrees with the report.
+
+**Where:** the skill's source is `skills/omni-pilot-custom-foods/` in `alperozaydin/my-skills`. The copy in this repo's `.claude/skills/` is installed with `npx skills` and never edited by hand. Install the branch with `npx skills add "alperozaydin/my-skills#<branch>" --skill omni-pilot-custom-foods -y`. Merge order: the my-skills PR first, then reinstall without the ref, commit, then the omni-pilot PR.
+
+**`recipe_tool.py`:**
+- For a food whose entries are all placeholders, the recipe check and the `review` and `flagged` listings compare by fitting the grams. They use the app's new function from step 1 and `GOOD_FIT_DISTANCE`, so the skill and the report give the same verdict.
+- They show the logged and the fitted grams (`100 g → 700 g`).
+- The skill's own impossible-macros check (`P+F+C > 100 g per 100 g`) no longer fires for these foods. They are now handled.
+- A food with some real-weight entries is averaged over those entries only, as the app does.
+- Every other food goes through the same code as before, unchanged.
+
+**`SKILL.md`:** replace the row that says to leave impossible macros flagged until the weight is fixed in MacroFactor. For a placeholder dish, the recipe's shares are tuned to the logged proportions of protein, fat and carbs. The grams are the app's job.
+
+**Tests:** in omni-pilot's suite, against the installed copy, as for the review mark:
+- a placeholder dish with a fitting recipe passes the check;
+- the same dish with a wrong recipe is still flagged;
+- a food with real weights gives the same figures as before.
+
