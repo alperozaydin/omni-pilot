@@ -5,12 +5,19 @@ import pytest
 
 from omni_pilot.matcher import (
     GOOD_DISTANCE,
+    GOOD_FIT_DISTANCE,
+    LoggedTotals,
+    UsdaMacros,
+    fit_grams,
+    fitted_distance,
     head_words,
+    logged_macros_for_matching,
     logged_macros_per_100g,
     macro_distance,
     matches_head,
     pick_best,
 )
+from tests.helpers import food_entry
 
 
 def _candidate(
@@ -263,3 +270,93 @@ def test_macro_distance_accepts_plain_macros():
     macros = {"protein_g": 6.0, "fat_g": 5.0, "carbs_g": 3.0, "fiber_g": None}
     logged = {"kcal": 74.0, "protein_g": 4.9, "fat_g": 4.2, "carbs_g": 3.0}
     assert macro_distance(logged, macros) == pytest.approx((4 * 1.1 + 9 * 0.8) / 74.0)
+
+
+KINGS = LoggedTotals(kcal=930.0, protein_g=53.0, fat_g=56.0, carbs_g=54.0)
+DOUBLE_CB = UsdaMacros(protein_g=16.2, fat_g=16.2, carbs_g=18.0, fiber_g=0.9)
+
+
+class TestFitGrams:
+    def test_kings_against_double_cheeseburger(self):
+        assert fit_grams(KINGS, DOUBLE_CB) == pytest.approx(335, abs=1)
+
+    def test_fit_never_below_macro_mass(self):
+        doner = LoggedTotals(kcal=935.0, protein_g=55.0, fat_g=39.0, carbs_g=99.0)
+        skin = UsdaMacros(protein_g=20.4, fat_g=40.7, carbs_g=0.0, fiber_g=0.0)
+        assert fit_grams(doner, skin) == pytest.approx(193.0)
+
+    def test_fit_needs_every_macro(self):
+        assert fit_grams(KINGS, UsdaMacros(protein_g=None, fat_g=1.0, carbs_g=1.0, fiber_g=None)) is None
+
+    def test_fit_needs_a_macro_above_zero(self):
+        assert fit_grams(KINGS, UsdaMacros(protein_g=0.0, fat_g=0.0, carbs_g=0.0, fiber_g=None)) is None
+
+    def test_fitted_distance_scores_at_the_fitted_grams(self):
+        assert fitted_distance(KINGS, DOUBLE_CB) == pytest.approx(0.04, abs=0.01)
+
+    def test_fitted_distance_without_fit_is_none(self):
+        assert fitted_distance(KINGS, UsdaMacros(protein_g=None, fat_g=1.0, carbs_g=1.0, fiber_g=None)) is None
+
+
+class TestPickBestByProportions:
+    QUERY = "fast foods, cheeseburger"
+    CANDIDATES = [
+        # Denser and meat-heavy: closer to King's impossible per-100 g figures.
+        _candidate("Fast foods, cheeseburger; large, double patty, no bun", 40.0, 45.0, 5.0, rank=0),
+        # The double cheeseburger's proportions.
+        _candidate("Fast foods, cheeseburger; double, regular patty; with condiments", 16.2, 16.2, 18.0, 0.9, rank=1),
+    ]
+
+    def test_weight_unknown_food_picks_by_proportions(self):
+        pick = pick_best(self.CANDIDATES, self.QUERY, None, totals=KINGS)
+        assert pick["candidate"]["rank"] == 1
+        assert pick["confidence"] == "good"
+        assert pick["macro_distance"] == pytest.approx(0.04, abs=0.01)
+
+    def test_per_100g_figures_would_pick_the_denser_one(self):
+        pick = pick_best(self.CANDIDATES, self.QUERY, _logged(930.0, 53.0, 56.0, 54.0))
+        assert pick["candidate"]["rank"] == 0
+
+    def test_fitted_pick_is_weak_above_good_fit_distance(self):
+        bens = LoggedTotals(kcal=660.0, protein_g=18.0, fat_g=13.0, carbs_g=113.0)
+        rice = [_candidate("Rice, white, long-grain, regular, raw, unenriched", 7.13, 0.66, 80.0, 1.3)]
+        pick = pick_best(rice, "rice, white, long-grain, regular, raw", None, totals=bens)
+        assert GOOD_FIT_DISTANCE < pick["macro_distance"] <= GOOD_DISTANCE
+        assert pick["confidence"] == "weak"
+
+    def test_known_weight_scoring_is_unchanged(self):
+        candidates = [
+            _candidate("Rice, white, long-grain, regular, raw, enriched", 7.13, 0.66, 80.0, 1.3, rank=0),
+            _candidate("Rice, white, long-grain, regular, enriched, cooked", 2.69, 0.28, 28.2, 0.4, rank=1),
+        ]
+        logged = _logged(141.1, 3.3, 1.3, 28.9)
+        query = "rice, white, long-grain, regular, raw"
+        assert pick_best(candidates, query, logged, totals=None) == pick_best(candidates, query, logged)
+
+
+class TestLoggedMacrosForMatching:
+    def test_mixed_food_uses_only_real_weight_entries(self):
+        entries = [
+            food_entry("X", 200.0, calories_kcal=290.0, protein_g=20.0, fat_g=10.0, carbs_g=30.0),
+            food_entry("X", 100.0, calories_kcal=1180.0, protein_g=60.0, fat_g=50.0, carbs_g=120.0,
+                       weight_is_placeholder=True),
+        ]
+        logged = logged_macros_for_matching(entries)
+        assert logged["per_100g"]["X"] == pytest.approx(
+            {"kcal": 145.0, "protein_g": 10.0, "fat_g": 5.0, "carbs_g": 15.0}
+        )
+        assert "X" not in logged["weight_unknown"]
+
+    def test_all_placeholder_food_gets_summed_totals(self):
+        kings = dict(calories_kcal=930.0, protein_g=53.0, fat_g=56.0, carbs_g=54.0, weight_is_placeholder=True)
+        logged = logged_macros_for_matching([food_entry("King's", **kings), food_entry("King's", **kings)])
+        assert logged["weight_unknown"]["King's"] == {
+            "kcal": 1860.0, "protein_g": 106.0, "fat_g": 112.0, "carbs_g": 108.0,
+        }
+        assert "King's" not in logged["per_100g"]
+
+    def test_logged_macros_per_100g_unchanged_for_placeholders(self):
+        """The custom-foods skill relies on it: a placeholder still counts at its logged 100 g."""
+        entry = food_entry("King's", 100.0, calories_kcal=930.0, protein_g=53.0, fat_g=56.0, carbs_g=54.0,
+                           weight_is_placeholder=True)
+        assert logged_macros_per_100g([entry])["King's"]["protein_g"] == pytest.approx(53.0)
