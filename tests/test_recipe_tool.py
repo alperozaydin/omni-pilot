@@ -339,7 +339,8 @@ EGGS_IMPOSSIBLE_ROW = ["2026-10-15", "08:00", "Boiled Eggs", "g", 100, 1, 1200.0
 
 class TestPending:
     def test_lists_new_changed_weak_and_not_found_foods(self, ws, run):
-        weak = _entry("Risotto Alla Milanese", 168943, "Rice and vermicelli mix", confidence="weak", macro_distance=0.34)
+        weak = _entry("Risotto Alla Milanese", 168943, "Rice and vermicelli mix",
+                      confidence="weak", macro_distance=0.34)
         ws.add(EGGS, {**MELON, "reviewed_fdc_id": 999}, weak, LENTILS_NOT_FOUND)
 
         code, out = run("pending")
