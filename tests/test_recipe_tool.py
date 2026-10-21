@@ -271,3 +271,85 @@ class TestReview:
         assert code == 0
         assert "(1 to review, 0 approved)" in out
         assert "approved before as FDC 173424; the match is now weak" in out
+
+
+def _ingredient(fdc_id: int, usda_name: str, protein: float, fat: float, carbs: float) -> dict:
+    """A usda_foods entry, as the enricher caches a recipe ingredient."""
+    return {
+        "fdc_id": fdc_id, "usda_name": usda_name, "usda_dataset": "SR Legacy",
+        "per_100g": {"vitamin_a_mcg": 1.0},
+        "usda_macros": {"protein_g": protein, "fat_g": fat, "carbs_g": carbs, "fiber_g": None},
+    }
+
+
+# Photo-logged: 1 x 100 g placeholder, 232 g of protein, fat and carbs.
+BOWL_ROW = ["2026-10-15", "19:00", "Chicken Bowl", "bowl", 1, 100, 1192.0, 52.0, 114.0, 66.0]
+# A real weight: 200 g of grilled chicken.
+CHICKEN_ROW = ["2026-10-15", "12:00", "Grilled Chicken", "g", 200, 1, 330.0, 7.0, 0.0, 62.0]
+# The bowl's macros per 100 g of a 700 g dish, and plain chicken breast.
+BOWL_MIX = _ingredient(1, "Chicken, rice and cream (mix)", 66 / 7, 52 / 7, 114 / 7)
+CHICKEN = _ingredient(2, "Chicken breast, cooked", 31.0, 3.5, 0.0)
+
+
+class TestPlaceholderWeights:
+    """Photo-logged meals: a 100 g placeholder weight with the macros of the whole meal."""
+
+    @pytest.fixture
+    def export(self, ws):
+        from tests.helpers import write_food_log
+
+        (ws.root / "data").mkdir()
+        write_food_log(ws.root / "data/export.xlsx", [BOWL_ROW, CHICKEN_ROW])
+
+    def _recipes(self, ws, recipes: dict[str, tuple[int, list[str]]]) -> None:
+        (ws.root / "config/custom_foods.yaml").write_text(yaml.safe_dump({
+            name: {"foods": foods, "ingredients": [{"fdc_id": fdc_id, "amount": 1}]}
+            for name, (fdc_id, foods) in recipes.items()
+        }))
+        ws.db_path.parent.mkdir(exist_ok=True)
+        with TinyDB(ws.db_path) as db:
+            db.table("usda_foods").insert_multiple([BOWL_MIX, CHICKEN])
+
+    def test_check_fits_a_placeholder_dish_with_a_fitting_recipe(self, ws, run, export):
+        self._recipes(ws, {"chicken_bowl": (1, ["Chicken Bowl"])})
+
+        code, out = run("check")
+
+        assert code == 0
+        assert ("  ✓ Chicken Bowl: logged 1192 kcal, P 66.0, F 52.0, C 114.0 over 1 serving "
+                "with a placeholder weight → fitted 700 g, off 0%") in out
+        assert "IMPOSSIBLE" not in out
+
+    def test_check_flags_a_placeholder_dish_with_a_wrong_recipe(self, ws, run, export):
+        self._recipes(ws, {"chicken_only": (2, ["Chicken Bowl"])})
+
+        _, out = run("check")
+
+        assert "  ⚠ Chicken Bowl: logged 1192 kcal" in out
+
+    def test_check_of_a_food_with_real_weights_is_unchanged(self, ws, run, export):
+        self._recipes(ws, {"chicken": (2, ["Grilled Chicken"])})
+
+        _, out = run("check")
+
+        assert "  ✓ Grilled Chicken: logged 165 kcal, P 31.0, F 3.5, C 0.0 → off 0%" in out
+
+    def test_review_does_not_call_a_placeholder_dish_impossible(self, ws, run, export):
+        ws.add(_entry("Chicken Bowl", 7, "Chicken breast tenders, breaded", confidence="weak", macro_distance=0.19,
+                      usda_macros={"protein_g": 16.4, "fat_g": 12.9, "carbs_g": 17.6, "fiber_g": 0.0}))
+
+        _, out = run("review")
+
+        assert "IMPOSSIBLE" not in out
+        assert ("Chicken Bowl  (1 serving with a placeholder weight; logged 1192 kcal, P 66.0, F 52.0, C 114.0)"
+                in out)
+
+    def test_flagged_shows_the_fitted_grams(self, ws, run, export):
+        ws.add(_entry("Chicken Bowl", 7, "Chicken breast tenders, breaded", confidence="weak", macro_distance=0.19,
+                      usda_macros={"protein_g": 16.4, "fat_g": 12.9, "carbs_g": 17.6, "fiber_g": 0.0}))
+
+        _, out = run("flagged")
+
+        assert ("    logged   : 1192 kcal, P 66.0, F 52.0, C 114.0 over 1 serving with a placeholder weight"
+                in out)
+        assert "    USDA pick: Chicken breast tenders, breaded (off 19%) → fitted 456 g" in out

@@ -40,7 +40,17 @@ from omni_pilot.enricher import (
     fetch_usda_food,
     search_usda,
 )
-from omni_pilot.matcher import GOOD_DISTANCE, LoggedMacros, logged_macros_per_100g, macro_distance
+from omni_pilot.matcher import (
+    GOOD_DISTANCE,
+    GOOD_FIT_DISTANCE,
+    LoggedFoods,
+    LoggedMacros,
+    LoggedTotals,
+    fit_grams,
+    fitted_distance,
+    logged_macros_for_matching,
+    macro_distance,
+)
 from omni_pilot.parser import parse_food_log
 
 N_NUTRIENTS = len(USDA_NUTRIENT_MAP)
@@ -80,8 +90,41 @@ def _export_paths(settings: dict, extra: list[str]) -> list[str]:
     return sorted(p for p in paths if "example" not in os.path.basename(p).lower())
 
 
-def _logged(settings: dict, extra: list[str]) -> tuple[dict[str, LoggedMacros], dict[str, float]]:
-    """Logged macros per 100 g and total grams per food, across all exports.
+class Logged:
+    """What was logged per food across all exports, split the way the app matches it.
+
+    `per_100g` holds foods with real weights (their placeholder entries left out);
+    `weight_unknown` the summed macros of foods logged only with MacroFactor's
+    100 g placeholder (photo-logged meals), whose grams the app fits to the match.
+    """
+
+    def __init__(self, foods: LoggedFoods, grams: dict[str, float], placeholders: dict[str, int]):
+        self.per_100g = foods["per_100g"]
+        self.weight_unknown = foods["weight_unknown"]
+        self.grams = grams
+        self.placeholders = placeholders
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.per_100g or name in self.weight_unknown
+
+    def names(self) -> set[str]:
+        return set(self.per_100g) | set(self.weight_unknown)
+
+    def describe(self, name: str) -> str | None:
+        """The logged macros as text: per 100 g, or in all for a placeholder weight."""
+        if name in self.per_100g:
+            return _fmt_logged(self.per_100g[name])
+        if name in self.weight_unknown:
+            return f"{_fmt_logged(self.weight_unknown[name])} {self.servings(name)}"
+        return None
+
+    def servings(self, name: str) -> str:
+        n = self.placeholders.get(name, 0)
+        return f"over {n} serving{'s' if n != 1 else ''} with a placeholder weight"
+
+
+def _logged(settings: dict, extra: list[str]) -> Logged:
+    """Logged macros and total grams per food, across all exports.
 
     Exports overlap in time, so an entry already read from an earlier export is
     dropped; repeats within one export are real and kept.
@@ -97,12 +140,15 @@ def _logged(settings: dict, extra: list[str]) -> tuple[dict[str, LoggedMacros], 
     finally:
         logging.disable(logging.NOTSET)
     grams: dict[str, float] = {}
+    placeholders: dict[str, int] = {}
     for entry in entries:
         grams[entry["food_name"]] = grams.get(entry["food_name"], 0.0) + max(entry["total_weight_g"], 0.0)
-    return logged_macros_per_100g(entries), grams
+        if entry["weight_is_placeholder"]:
+            placeholders[entry["food_name"]] = placeholders.get(entry["food_name"], 0) + 1
+    return Logged(logged_macros_for_matching(entries), grams, placeholders)
 
 
-def _fmt_logged(m: LoggedMacros) -> str:
+def _fmt_logged(m: LoggedMacros | LoggedTotals) -> str:
     return f"{m['kcal']:.0f} kcal, P {m['protein_g']:.1f}, F {m['fat_g']:.1f}, C {m['carbs_g']:.1f}"
 
 
@@ -140,25 +186,35 @@ def cmd_flagged(args: argparse.Namespace) -> None:
     if db is None:
         sys.exit("No food database found.")
     custom = load_custom_foods(resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings))
-    logged, grams = _logged(settings, args.exports)
+    logged = _logged(settings, args.exports)
     rows = [
         e for e in db.all()
         if e.get("confidence") == "weak" and e["original_name"] not in custom["by_food"]
     ]
     if not rows:
         print("No weak matches outside custom recipes.")
-    for e in sorted(rows, key=lambda e: -grams.get(e["original_name"], 0.0)):
+    for e in sorted(rows, key=lambda e: -logged.grams.get(e["original_name"], 0.0)):
         name = e["original_name"]
-        m = logged.get(name)
         distance = e.get("macro_distance")
+        pick = f"    USDA pick: {e.get('usda_name')} (off {'?' if distance is None else f'{distance:.0%}'})"
         print(f"{name}")
-        print(f"    logged   : {_fmt_logged(m) if m else 'no logged macros in any export'}"
-              f" ({grams.get(name, 0):.0f} g across exports)")
-        print(f"    USDA pick: {e.get('usda_name')} (off {'?' if distance is None else f'{distance:.0%}'})")
+        if name in logged.weight_unknown:
+            print(f"    logged   : {logged.describe(name)}")
+            grams = fit_grams(logged.weight_unknown[name], e["usda_macros"]) if e.get("usda_macros") else None
+            print(pick + ("" if grams is None else f" → fitted {grams:.0f} g"))
+            continue
+        print(f"    logged   : {logged.describe(name) or 'no logged macros in any export'}"
+              f" ({logged.grams.get(name, 0):.0f} g across exports)")
+        print(pick)
 
 
 def _implausible(m: LoggedMacros) -> bool:
-    """Logged macros no real food can have: a logging error, usually the weight."""
+    """Logged macros no real food can have: a logging error, usually the weight.
+
+    Only per-100 g figures are checked. A photo-logged meal's 100 g placeholder
+    is left out of them (its grams are fitted to the match instead), so what
+    is still caught here is a weight typed in wrong.
+    """
     return m["protein_g"] + m["fat_g"] + m["carbs_g"] > 100 or m["kcal"] > 900
 
 
@@ -171,9 +227,10 @@ def cmd_review(args: argparse.Namespace) -> None:
     custom = load_custom_foods(resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings))
     mappings = _mappings(settings, db)
     matches = {e["original_name"]: e for e in db.all()}
-    logged, grams = _logged(settings, args.exports)
+    logged = _logged(settings, args.exports)
+    grams = logged.grams
 
-    names = sorted(set(logged) | set(matches) | set(mappings) | set(custom["by_food"]),
+    names = sorted(logged.names() | set(matches) | set(mappings) | set(custom["by_food"]),
                    key=lambda n: (-grams.get(n, 0.0), n.lower()))
     groups: dict[str, list[str]] = {
         "custom": [], "skipped": [], "searched": [], "not in usda": [], "not looked up": [],
@@ -190,7 +247,9 @@ def cmd_review(args: argparse.Namespace) -> None:
             groups["not looked up"].append(name)
 
     def header(name: str, check_macros: bool = True) -> str:
-        m = logged.get(name)
+        if name in logged.weight_unknown:
+            return f"{name}  ({logged.servings(name).removeprefix('over ')}; logged {_fmt_logged(logged.weight_unknown[name])})"
+        m = logged.per_100g.get(name)
         eaten = f"{grams[name]:.0f} g" if grams.get(name) else "not in any export"
         line = f"{name}  ({eaten}"
         if m:
@@ -271,8 +330,8 @@ def cmd_check(args: argparse.Namespace) -> None:
     if not custom["recipes"]:
         sys.exit(f"No recipes in {path} (missing, empty or comments only).")
     db = _open_db(settings)
-    logged, _ = _logged(settings, args.exports)
-    known = set(logged)
+    logged = _logged(settings, args.exports)
+    known = logged.names()
     if db is not None:
         known |= {e["original_name"] for e in db.all()}
         known |= {e.get("german") for e in db.table("translations")}
@@ -300,16 +359,24 @@ def cmd_check(args: argparse.Namespace) -> None:
                 print(f"  ✗ {name}: not a logged food name (check spelling against the export)")
                 problems += 1
                 continue
-            m = logged.get(name)
-            if m is None:
+            if name not in logged:
                 print(f"  - {name}: no logged macros in any export, not checked")
                 continue
-            distance = macro_distance(m, macros)
-            if distance is None:
+            if name in logged.weight_unknown:
+                # As the app does: the grams are fitted to the recipe, so only proportions count.
+                totals = logged.weight_unknown[name]
+                distance = fitted_distance(totals, macros)
+                limit = GOOD_FIT_DISTANCE
+                result = None if distance is None else f"fitted {fit_grams(totals, macros):.0f} g, off {distance:.0%}"
+            else:
+                distance = macro_distance(logged.per_100g[name], macros)
+                limit = GOOD_DISTANCE
+                result = None if distance is None else f"off {distance:.0%}"
+            if result is None:
                 print(f"  - {name}: recipe lacks a macro, not checked")
                 continue
-            flag = "⚠" if distance > GOOD_DISTANCE else "✓"
-            print(f"  {flag} {name}: logged {_fmt_logged(m)} → off {distance:.0%}")
+            flag = "⚠" if distance > limit else "✓"
+            print(f"  {flag} {name}: logged {logged.describe(name)} → {result}")
     print(f"\n{len(custom['recipes'])} recipes, {len(custom['by_food'])} foods, file valid"
           + (f", {problems} problem(s)" if problems else ""))
     if problems:
