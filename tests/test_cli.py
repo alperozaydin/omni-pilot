@@ -380,6 +380,37 @@ class TestCLIAnalyze:
         logged = mock_enrich.call_args.args[2]
         assert logged["Reis"] == {"kcal": 130.0, "protein_g": 3.0, "fat_g": 0.0, "carbs_g": 28.0}
 
+    def test_analyze_passes_weight_unknown_to_enrichment(self, mocker, tmp_path):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"King's": "fast foods, cheeseburger"})
+        kings = food_entry("King's", 100.0, calories_kcal=930.0, protein_g=53.0, fat_g=56.0, carbs_g=54.0,
+                           weight_is_placeholder=True)
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[kings])
+        mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods", return_value=enrichment())
+
+        self._run(mocker, settings_path, ref_ranges_path)
+
+        assert "King's" not in mock_enrich.call_args.args[2]
+        assert mock_enrich.call_args.kwargs["weight_unknown"] == {
+            "King's": {"kcal": 930.0, "protein_g": 53.0, "fat_g": 56.0, "carbs_g": 54.0},
+        }
+
+    def test_analyze_passes_estimated_entries_to_analyze(self, mocker, tmp_path):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {"King's": "fast foods, cheeseburger"})
+        kings = food_entry("King's", 100.0, calories_kcal=930.0, protein_g=53.0, fat_g=56.0, carbs_g=54.0,
+                           weight_is_placeholder=True)
+        mocker.patch("omni_pilot.cli.parse_food_log", return_value=[kings])
+        double_cb = {"protein_g": 16.2, "fat_g": 16.2, "carbs_g": 18.0, "fiber_g": 0.9}
+        mocker.patch(
+            "omni_pilot.cli.enrich_all_foods",
+            return_value=enrichment({"King's": {}}, matched_macros={"King's": double_cb}),
+        )
+
+        mock_analyze = self._run(mocker, settings_path, ref_ranges_path)
+
+        [entry] = mock_analyze.call_args.args[0]
+        assert entry["total_weight_g"] == pytest.approx(335, abs=1)
+        assert entry["weight_estimate"]["logged_g"] == 100.0
+
     def test_analyze_announces_rematching_of_outdated_cache(self, mocker, tmp_path, capsys):
         db_path, settings_path, ref_ranges_path = self._write_config(
             tmp_path, {"Reis": "rice, cooked", "Milch": "milk"}
@@ -718,7 +749,7 @@ class TestCLIAnalyzeS3:
         self.mock_html = mocker.patch("omni_pilot.cli.generate_html_report", side_effect=self._write_html)
         self.enrichment = enrichment({"Apple": {}})
 
-    def _enrich(self, food_names, mappings, logged_macros, db, api_key, custom_foods, untranslated):
+    def _enrich(self, food_names, mappings, logged_macros, db, api_key, custom_foods, untranslated, weight_unknown):
         db.insert({"original_name": "Apple", "usda_query": "apple", "per_100g": {}})  # the run changes the database
         return self.enrichment
 

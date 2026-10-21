@@ -13,7 +13,7 @@ from tinydb import Query, TinyDB
 
 from omni_pilot import matcher
 from omni_pilot.custom_foods import CustomFoods, Recipe, no_custom_foods, recipe_macros
-from omni_pilot.matcher import Candidate, LoggedMacros, UsdaMacros
+from omni_pilot.matcher import Candidate, LoggedMacros, LoggedTotals, UsdaMacros
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,9 @@ class CustomFoodMatch(TypedDict):
     recipe: str
     parts: list[RecipePart]
     macro_distance: float | None
+    # The food's logged weight is a placeholder, so macro_distance was taken at
+    # the grams fitted to the recipe (matcher.fitted_distance).
+    weight_unknown: bool
 
 
 class EnrichmentResult(TypedDict):
@@ -71,6 +74,10 @@ class EnrichmentResult(TypedDict):
     # never in profiles: the analyzer counts them ingredient by ingredient, so
     # an ingredient missing a nutrient costs only its own share of coverage.
     custom: dict[str, CustomFoodMatch]
+    # Per-100 g macros of each resolved food's match: the USDA food's, or the
+    # recipe's combined ones. Placeholder weights are fitted against them
+    # (matcher.estimate_weights). A USDA food without stored macros is absent.
+    matched_macros: dict[str, UsdaMacros]
 
 
 class FoodMatch(TypedDict):
@@ -78,6 +85,7 @@ class FoodMatch(TypedDict):
     usda_name: str
     confidence: str  # "good" | "weak" | "no_macros" | "unverified"
     macro_distance: float | None
+    usda_macros: UsdaMacros | None  # None for a legacy entry stored without them
 
 
 # Why get_food_match has no match: USDA answered and has no such food
@@ -382,7 +390,21 @@ def _match_from_entry(entry: dict, confidence: str | None = None) -> FoodMatch:
         usda_name=entry.get("usda_name", ""),
         confidence=confidence or entry.get("confidence", ""),
         macro_distance=entry.get("macro_distance"),
+        usda_macros=entry.get("usda_macros"),
     )
+
+
+def _matched_by(totals: LoggedTotals | None) -> str:
+    """How a pick is made: by proportions when the logged weight is a placeholder."""
+    return "proportions" if totals is not None else "per_100g"
+
+
+def _made_the_same_way(entry: dict, totals: LoggedTotals | None) -> bool:
+    """Whether a cached pick was made the way this run would make it.
+
+    An entry without the field predates it and was made by per-100 g figures.
+    """
+    return entry.get("matched_by", "per_100g") == _matched_by(totals)
 
 
 def get_food_match(
@@ -391,6 +413,7 @@ def get_food_match(
     logged: LoggedMacros | None,
     db: TinyDB,
     api_key: str,
+    totals: LoggedTotals | None = None,
 ) -> FoodMatch | LookupMiss:
     """Get the USDA match and per-100g micro profile for a food.
 
@@ -408,6 +431,11 @@ def get_food_match(
     A pick made from an incomplete candidate set (the head-word search
     failed) is cached but left without `match_version`, so it is treated as
     outdated and retried on the next run instead of being trusted as final.
+
+    With `totals` (the food's logged weight is a placeholder) candidates are
+    scored by proportions. Each pick records how it was made (`matched_by`),
+    and an entry made the other way is re-picked like an outdated one: a food
+    whose weight was fixed in MacroFactor must not keep a proportions pick.
     """
     Food = Query()
     stale_entry = None
@@ -418,7 +446,7 @@ def get_food_match(
             if entry.get("not_found"):
                 if _is_fresh_not_found(entry):
                     return "not_in_usda"
-            elif _is_current(entry):
+            elif _is_current(entry) and _made_the_same_way(entry, totals):
                 return _match_from_entry(entry)
             stale_entry = entry
         else:
@@ -427,7 +455,7 @@ def get_food_match(
             db.remove(Food.original_name == food_name)
 
     candidates, complete = get_food_candidates(usda_query, api_key)
-    pick = matcher.pick_best(candidates, usda_query, logged)
+    pick = matcher.pick_best(candidates, usda_query, logged, totals)
     if pick is None:
         if stale_entry is not None and not stale_entry.get("not_found"):
             logger.warning("Re-matching '%s' failed; keeping its previous USDA match", food_name)
@@ -450,6 +478,12 @@ def get_food_match(
 
     candidate = pick["candidate"]
     micros = extract_micros_from_usda(candidate["raw"])
+    usda_macros = UsdaMacros(
+        protein_g=candidate["protein_g"],
+        fat_g=candidate["fat_g"],
+        carbs_g=candidate["carbs_g"],
+        fiber_g=candidate["fiber_g"],
+    )
     entry_to_cache = {
         "original_name": food_name,
         "usda_query": usda_query,
@@ -459,12 +493,9 @@ def get_food_match(
         "per_100g": micros,
         "confidence": pick["confidence"],
         "macro_distance": pick["macro_distance"],
-        "usda_macros": {
-            "protein_g": candidate["protein_g"],
-            "fat_g": candidate["fat_g"],
-            "carbs_g": candidate["carbs_g"],
-            "fiber_g": candidate["fiber_g"],
-        },
+        "usda_macros": usda_macros,
+        # Always written: upsert merges, so a stale value would otherwise survive.
+        "matched_by": _matched_by(totals),
         "last_updated": str(date.today()),
     }
     if complete:
@@ -480,11 +511,18 @@ def get_food_match(
         usda_name=candidate["description"],
         confidence=pick["confidence"],
         macro_distance=pick["macro_distance"],
+        usda_macros=usda_macros,
     )
 
 
-def count_outdated_matches(food_names: list[str], mappings: dict[str, str], db: TinyDB) -> int:
-    """Count cached foods whose query is current but whose match_version is not."""
+def count_outdated_matches(
+    food_names: list[str], mappings: dict[str, str], db: TinyDB, weight_unknown: Collection[str] = frozenset(),
+) -> int:
+    """Count cached foods whose query is current but which get_food_match will re-pick.
+
+    That is an entry whose match_version is outdated, or whose pick was made
+    the other way than its food in `weight_unknown` needs (see get_food_match).
+    """
     Food = Query()
     outdated = 0
     for food_name in food_names:
@@ -493,7 +531,13 @@ def count_outdated_matches(food_names: list[str], mappings: dict[str, str], db: 
             continue
         query = mapping if mapping else food_name
         cached = db.search(Food.original_name == food_name)
-        if cached and cached[0].get("usda_query") == query and not _is_current(cached[0]):
+        if not cached or cached[0].get("usda_query") != query:
+            continue
+        entry = cached[0]
+        made_right = entry.get("not_found") or entry.get("matched_by", "per_100g") == (
+            "proportions" if food_name in weight_unknown else "per_100g"
+        )
+        if not _is_current(entry) or not made_right:
             outdated += 1
     return outdated
 
@@ -521,15 +565,21 @@ def _recipe_ingredients(
 
 def _custom_food_match(
     recipe_name: str, ingredients: list[tuple[float, UsdaFood]], logged: LoggedMacros | None,
+    totals: LoggedTotals | None = None,
 ) -> CustomFoodMatch:
     macros = recipe_macros([(share, food["usda_macros"]) for share, food in ingredients])
+    if totals is not None:
+        distance = matcher.fitted_distance(totals, macros)
+    else:
+        distance = matcher.macro_distance(logged, macros) if logged is not None else None
     return CustomFoodMatch(
         recipe=recipe_name,
         parts=[
             RecipePart(share=share, fdc_id=food["fdc_id"], usda_name=food["usda_name"], per_100g=food["per_100g"])
             for share, food in ingredients
         ],
-        macro_distance=matcher.macro_distance(logged, macros) if logged is not None else None,
+        macro_distance=distance,
+        weight_unknown=totals is not None,
     )
 
 
@@ -541,6 +591,7 @@ def enrich_all_foods(
     api_key: str,
     custom_foods: CustomFoods | None = None,
     untranslated: Collection[str] = frozenset(),
+    weight_unknown: dict[str, LoggedTotals] | None = None,
 ) -> EnrichmentResult:
     """Enrich all foods with USDA micro data.
 
@@ -552,13 +603,18 @@ def enrich_all_foods(
     translation this run) go into untranslated without a USDA search or
     cache write. Resolved foods whose match is weak are also listed in
     low_confidence.
+
+    A food in `weight_unknown` (every logged weight a placeholder) is matched
+    by the proportions of its summed macros instead of `logged_macros`.
     """
     if custom_foods is None:
         custom_foods = no_custom_foods()
     result: EnrichmentResult = {
         "profiles": {}, "skipped": set(), "not_in_usda": set(), "lookup_failed": set(),
-        "untranslated": set(), "low_confidence": {}, "custom": {},
+        "untranslated": set(), "low_confidence": {}, "custom": {}, "matched_macros": {},
     }
+    if weight_unknown is None:
+        weight_unknown = {}
     fetched: dict[int, UsdaFood | None] = {}
 
     for food_name in food_names:
@@ -573,7 +629,10 @@ def enrich_all_foods(
                 )
             else:
                 result["custom"][food_name] = _custom_food_match(
-                    recipe_name, ingredients, logged_macros.get(food_name),
+                    recipe_name, ingredients, logged_macros.get(food_name), weight_unknown.get(food_name),
+                )
+                result["matched_macros"][food_name] = recipe_macros(
+                    [(share, food["usda_macros"]) for share, food in ingredients]
                 )
             continue
 
@@ -591,7 +650,9 @@ def enrich_all_foods(
 
         # Use the mapping if provided, otherwise use the original name
         query = mapping if mapping else food_name
-        match = get_food_match(food_name, query, logged_macros.get(food_name), db, api_key)
+        match = get_food_match(
+            food_name, query, logged_macros.get(food_name), db, api_key, weight_unknown.get(food_name),
+        )
 
         if match == "not_in_usda":
             result["not_in_usda"].add(food_name)
@@ -603,6 +664,8 @@ def enrich_all_foods(
             continue
 
         result["profiles"][food_name] = match["per_100g"]
+        if match["usda_macros"] is not None:
+            result["matched_macros"][food_name] = match["usda_macros"]
         if match["confidence"] == "weak":
             result["low_confidence"][food_name] = LowConfidenceMatch(
                 usda_name=match["usda_name"],

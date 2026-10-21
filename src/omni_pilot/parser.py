@@ -27,6 +27,8 @@ class FoodEntry(TypedDict):
     carbs_g: float
     # MacroFactor's own fiber figure for this entry; None when the cell is empty.
     fiber_g: float | None
+    # total_weight_g is a placeholder, not what was eaten (see is_placeholder_weight).
+    weight_is_placeholder: bool
 
 
 class LastDayCheck(TypedDict):
@@ -42,6 +44,13 @@ class LastDayCheck(TypedDict):
 # Full days in the exports so far reached at least 79%; the partly logged last
 # days 47% and 52% (a lunch-time export), which a cutoff of half let through.
 PARTIAL_DAY_SHARE = 0.7
+
+# Meals logged from a photo get a serving weight of 100 g whatever their size,
+# while their macros are right for the whole meal. Such an entry gives itself
+# away when its protein, fat and carbs weigh more than the entry, which no food
+# can; the margin absorbs whole-gram rounding.
+PLACEHOLDER_SERVING_G = 100.0
+PLACEHOLDER_MACRO_MARGIN = 1.05
 
 
 # Column indices in the "Food Log" sheet (0-indexed)
@@ -85,6 +94,10 @@ def parse_food_log(xlsx_path: str) -> list[FoodEntry]:
                 row_idx,
             )
 
+        calories_kcal = float(row[_COL_CALORIES] or 0)
+        protein_g = float(row[_COL_PROTEIN] or 0)
+        fat_g = float(row[_COL_FAT] or 0)
+        carbs_g = float(row[_COL_CARBS] or 0)
         entries.append(FoodEntry(
             date=str(row[_COL_DATE] or ""),
             time=str(row[_COL_TIME] or ""),
@@ -93,15 +106,28 @@ def parse_food_log(xlsx_path: str) -> list[FoodEntry]:
             serving_qty=serving_qty,
             serving_weight_g=serving_weight_g,
             total_weight_g=total_weight_g,
-            calories_kcal=float(row[_COL_CALORIES] or 0),
-            protein_g=float(row[_COL_PROTEIN] or 0),
-            fat_g=float(row[_COL_FAT] or 0),
-            carbs_g=float(row[_COL_CARBS] or 0),
+            calories_kcal=calories_kcal,
+            protein_g=protein_g,
+            fat_g=fat_g,
+            carbs_g=carbs_g,
             fiber_g=float(logged_fiber) if logged_fiber is not None else None,
+            weight_is_placeholder=is_placeholder_weight(
+                serving_weight_g, total_weight_g, protein_g, fat_g, carbs_g,
+            ),
         ))
 
     wb.close()
     return entries
+
+
+def is_placeholder_weight(
+    serving_weight_g: float, total_weight_g: float, protein_g: float, fat_g: float, carbs_g: float,
+) -> bool:
+    """Whether an entry's weight is MacroFactor's 100 g placeholder for a photo-logged meal."""
+    return (
+        serving_weight_g == PLACEHOLDER_SERVING_G
+        and protein_g + fat_g + carbs_g > PLACEHOLDER_MACRO_MARGIN * total_weight_g
+    )
 
 
 def parse_daily_expenditure(xlsx_path: str) -> dict[str, float]:

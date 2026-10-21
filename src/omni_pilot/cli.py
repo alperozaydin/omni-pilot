@@ -23,7 +23,7 @@ from omni_pilot.config import (
 )
 from omni_pilot.custom_foods import CustomFoodsError, load_custom_foods
 from omni_pilot.enricher import count_outdated_matches, enrich_all_foods
-from omni_pilot.matcher import logged_macros_per_100g
+from omni_pilot.matcher import estimate_weights, logged_macros_for_matching
 from omni_pilot.net import prefer_ipv4_connections
 from omni_pilot.parser import check_last_day, extract_unique_foods, parse_daily_expenditure, parse_food_log
 from omni_pilot.reporter import generate_html_report, print_terminal_report
@@ -198,12 +198,17 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     print("Enriching foods with USDA data...")
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
-    outdated = count_outdated_matches([f for f in translatable if f not in untranslated], mappings, db)
+    # Placeholder weights (photo-logged meals) are left out of the per-100 g figures;
+    # foods with nothing else are matched by their macro proportions.
+    logged = logged_macros_for_matching(entries)
+    outdated = count_outdated_matches(
+        [f for f in translatable if f not in untranslated], mappings, db, weight_unknown=logged["weight_unknown"],
+    )
     if outdated:
         print(f"  Re-matching {outdated} cached foods with updated USDA matching...")
-    logged_macros = logged_macros_per_100g(entries)
     enrichment = enrich_all_foods(
-        food_names, mappings, logged_macros, db, api_key, custom_foods=custom_foods, untranslated=untranslated,
+        food_names, mappings, logged["per_100g"], db, api_key, custom_foods=custom_foods, untranslated=untranslated,
+        weight_unknown=logged["weight_unknown"],
     )
     resolved = len(enrichment["profiles"]) + len(enrichment["custom"])
     print(f"  {resolved}/{len(food_names)} foods resolved.")
@@ -222,7 +227,9 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # 4. Analyze Micronutrient Intake
+    # 4. Analyze Micronutrient Intake, with placeholder weights replaced by grams
+    # fitted to each food's match (worked out every run, never stored).
+    entries = estimate_weights(entries, enrichment["matched_macros"])
     print("Analyzing micronutrient intake...")
     left_out_day = last_day if last_day and last_day["partial"] else None
     result = analyze(entries, enrichment, ref_ranges, supplements=supplements, left_out_day=left_out_day)

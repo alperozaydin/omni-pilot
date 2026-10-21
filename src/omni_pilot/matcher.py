@@ -20,6 +20,13 @@ KCAL_FLOOR = 50.0
 NEAR_TIE_BAND = 0.05
 # A match whose macro distance is at or below this is "good"; above it, "weak".
 GOOD_DISTANCE = 0.25
+# The same for a food whose logged weight is a placeholder. Its grams are fitted
+# to each candidate first, a free parameter that makes any distance look
+# better, so the bar is stricter: at 0.25 raw rice alone would pass for rice
+# with chickpeas (0.22).
+GOOD_FIT_DISTANCE = 0.15
+# kcal per gram of protein, fat and carbs, weighting each macro in the gram fit.
+_FIT_WEIGHTS = (4.0, 9.0, 4.0)
 # Score penalty for a candidate containing none of the query's words. Large
 # enough that a different food with closer macros (camembert for feta) loses.
 IDENTITY_WEIGHT = 0.5
@@ -43,6 +50,34 @@ class LoggedMacros(TypedDict):
     protein_g: float
     fat_g: float
     carbs_g: float
+
+
+class LoggedTotals(TypedDict):
+    """Macros summed over entries whose logged weight is a placeholder. Not per 100 g."""
+
+    kcal: float
+    protein_g: float
+    fat_g: float
+    carbs_g: float
+
+
+class LoggedFoods(TypedDict):
+    """Logged macros per food, split by whether the logged weight can be trusted.
+
+    A food is in at most one of the two.
+    """
+
+    per_100g: dict[str, LoggedMacros]
+    # Every entry's weight is a placeholder: only the proportions are known.
+    weight_unknown: dict[str, LoggedTotals]
+
+
+class WeightEstimate(TypedDict):
+    """A placeholder entry's logged grams and the grams fitted to its match."""
+
+    logged_g: float
+    estimated_g: float | None  # None: nothing to fit against
+    macro_distance: float | None
 
 
 class Candidate(TypedDict):
@@ -101,6 +136,100 @@ def logged_macros_per_100g(entries: list[dict]) -> dict[str, LoggedMacros]:
         )
         for food_name, (grams, kcal, protein, fat, carbs) in totals.items()
     }
+
+
+def logged_macros_for_matching(entries: list[dict]) -> LoggedFoods:
+    """Logged macros per food for matching, leaving placeholder weights out.
+
+    A food's per-100 g figures come from its entries with a real weight only. A
+    food whose every entry has a placeholder weight gets its summed macros
+    instead, so it is matched by proportions (see `fitted_distance`).
+    """
+    per_100g = logged_macros_per_100g([e for e in entries if not e.get("weight_is_placeholder", False)])
+    totals: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])
+    for entry in entries:
+        if not entry.get("weight_is_placeholder", False) or entry["food_name"] in per_100g:
+            continue
+        food_totals = totals[entry["food_name"]]
+        food_totals[0] += entry["calories_kcal"]
+        food_totals[1] += entry["protein_g"]
+        food_totals[2] += entry["fat_g"]
+        food_totals[3] += entry["carbs_g"]
+    return LoggedFoods(
+        per_100g=per_100g,
+        weight_unknown={
+            food_name: LoggedTotals(kcal=kcal, protein_g=protein, fat_g=fat, carbs_g=carbs)
+            for food_name, (kcal, protein, fat, carbs) in totals.items()
+        },
+    )
+
+
+def fit_grams(logged: LoggedTotals, macros: UsdaMacros) -> float | None:
+    """The grams of a food whose macros come closest to the logged ones.
+
+    Least squares over protein, fat and carbs, each weighted by its kcal per
+    gram. Never below the logged macros' own weight: no food weighs less than
+    its protein, fat and carbs, though a wrong match can fit there. None when
+    the food lacks a macro or has none at all.
+    """
+    food = (macros["protein_g"], macros["fat_g"], macros["carbs_g"])
+    if any(value is None for value in food):
+        return None
+    eaten = (logged["protein_g"], logged["fat_g"], logged["carbs_g"])
+    denominator = sum(w * w * u * u for w, u in zip(_FIT_WEIGHTS, food))
+    if denominator == 0:
+        return None
+    numerator = sum(w * w * l * u for w, l, u in zip(_FIT_WEIGHTS, eaten, food))
+    return max(100.0 * numerator / denominator, sum(eaten))
+
+
+def fitted_distance(logged: LoggedTotals, macros: UsdaMacros) -> float | None:
+    """`macro_distance` with the logged macros taken per 100 g at the fitted grams."""
+    grams = fit_grams(logged, macros)
+    if grams is None:
+        return None
+    scale = 100.0 / grams
+    per_100g = LoggedMacros(
+        kcal=logged["kcal"] * scale,
+        protein_g=logged["protein_g"] * scale,
+        fat_g=logged["fat_g"] * scale,
+        carbs_g=logged["carbs_g"] * scale,
+    )
+    return macro_distance(per_100g, macros)
+
+
+def estimate_weights(entries: list[dict], matched_macros: dict[str, UsdaMacros]) -> list[dict]:
+    """Entries with each placeholder weight replaced by grams fitted to the food's match.
+
+    Every placeholder entry gets a `weight_estimate`, and its `total_weight_g`
+    becomes the fitted grams when its food has matched macros to fit against;
+    otherwise it keeps the logged weight. Each entry is fitted on its own
+    macros, so two servings of one food get their own grams. The grams are
+    worked out again on every run and never stored: they belong to a meal, not
+    to a food, and a recipe added later then applies to older exports too.
+    """
+    estimated = []
+    for entry in entries:
+        if not entry.get("weight_is_placeholder", False):
+            estimated.append(entry)
+            continue
+        logged = LoggedTotals(
+            kcal=entry["calories_kcal"], protein_g=entry["protein_g"],
+            fat_g=entry["fat_g"], carbs_g=entry["carbs_g"],
+        )
+        macros = matched_macros.get(entry["food_name"])
+        grams = fit_grams(logged, macros) if macros is not None else None
+        estimate = WeightEstimate(
+            logged_g=entry["total_weight_g"],
+            estimated_g=grams,
+            macro_distance=fitted_distance(logged, macros) if grams is not None else None,
+        )
+        estimated.append({
+            **entry,
+            "total_weight_g": grams if grams is not None else entry["total_weight_g"],
+            "weight_estimate": estimate,
+        })
+    return estimated
 
 
 def _singular(word: str) -> str:
@@ -190,8 +319,14 @@ def pick_best(
     candidates: list[Candidate],
     query: str,
     logged: LoggedMacros | None,
+    totals: LoggedTotals | None = None,
 ) -> Pick | None:
-    """Pick the candidate that is the named food and best fits the logged macros."""
+    """Pick the candidate that is the named food and best fits the logged macros.
+
+    With `totals` (the food's logged weight is a placeholder) each candidate is
+    scored at the grams fitted to it, so only the proportions of protein, fat
+    and carbs count, and the bar for "good" is GOOD_FIT_DISTANCE.
+    """
     if not candidates:
         return None
 
@@ -202,7 +337,7 @@ def pick_best(
         pool = list(candidates)
     pool.sort(key=lambda c: c["rank"])
 
-    if logged is None:
+    if logged is None and totals is None:
         # No macros to fall back on, and no candidate is even the named food:
         # weaker than an ordinary no_macros pick, which at least has a head match.
         confidence = "weak" if no_head_match else "no_macros"
@@ -211,7 +346,7 @@ def pick_best(
     query_words = {w for segment in _segments(query) for w in segment}
     scored = []
     for candidate in pool:
-        distance = macro_distance(logged, candidate)
+        distance = fitted_distance(totals, candidate) if totals is not None else macro_distance(logged, candidate)
         if distance is None:
             continue
         score = distance + IDENTITY_WEIGHT * (1.0 - _word_overlap(query_words, candidate["description"]))
@@ -225,5 +360,6 @@ def pick_best(
     chosen, distance, _ = min(
         tied, key=lambda s: (s[0]["data_type"] != "SR Legacy", s[2], s[0]["rank"])
     )
-    confidence = "good" if distance <= GOOD_DISTANCE and not no_head_match else "weak"
+    good_distance = GOOD_FIT_DISTANCE if totals is not None else GOOD_DISTANCE
+    confidence = "good" if distance <= good_distance and not no_head_match else "weak"
     return Pick(candidate=chosen, macro_distance=distance, confidence=confidence)

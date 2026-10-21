@@ -9,7 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from omni_pilot.matcher import GOOD_DISTANCE
+from omni_pilot.matcher import GOOD_DISTANCE, GOOD_FIT_DISTANCE
 from omni_pilot.parser import PARTIAL_DAY_SHARE
 
 # Status emoji and color mapping
@@ -121,7 +121,38 @@ def _low_confidence_line(coverage: dict) -> str | None:
             text += f" (off {food['macro_distance'] * 100:.0f}%)"
         described.append(text)
     share = coverage["low_confidence_weight_pct"]
-    return f"Low-confidence matches ({share:.0f}% of analysed weight): {', '.join(described)}"
+    kcal_share = coverage["low_confidence_kcal_pct"]
+    return (
+        f"Low-confidence matches ({share:.0f}% of analysed weight, {kcal_share:.0f}% of calories): "
+        f"{', '.join(described)}"
+    )
+
+
+def _estimated_weights_line(coverage: dict) -> str | None:
+    """Name the entries whose placeholder weight was replaced by fitted grams, if any.
+
+    Servings with the same rounded grams are named once with a count.
+    """
+    foods = coverage["estimated_weights"]
+    if not foods:
+        return None
+    described = []
+    for food in foods:
+        servings: dict[tuple[str, str | None], list[float | None]] = {}
+        for estimate in food["estimates"]:
+            estimated = f"{estimate['estimated_g']:.0f}" if estimate["estimated_g"] is not None else None
+            servings.setdefault((f"{estimate['logged_g']:.0f}", estimated), []).append(estimate["macro_distance"])
+        for (logged, estimated), distances in servings.items():
+            notes = [f"×{len(distances)}"] if len(distances) > 1 else []
+            if estimated is None:
+                described.append(f"{food['name']} {logged} g ({', '.join(notes + ['weight not estimated'])})")
+                continue
+            worst = max((d for d in distances if d is not None), default=None)
+            if worst is not None and worst > GOOD_FIT_DISTANCE:
+                notes.append(f"⚠ off {worst * 100:.0f}%")
+            text = f"{food['name']} {logged} g → {estimated} g"
+            described.append(f"{text} ({', '.join(notes)})" if notes else text)
+    return f"Estimated weights (100 g placeholder servings, impossible for their macros): {', '.join(described)}"
 
 
 def _left_out_day_line(period: dict) -> str | None:
@@ -143,12 +174,17 @@ def _logged_fiber_line(coverage: dict) -> str | None:
     return f"Fiber: {share:.0f}% from MacroFactor's logged values, the rest from USDA"
 
 
-def _macro_check(distance: float | None, prefix: str = "") -> str:
+def _good_distance(food: dict) -> float:
+    """The bar a custom food's macro check is held to: stricter when its grams were fitted."""
+    return GOOD_FIT_DISTANCE if food["fitted"] else GOOD_DISTANCE
+
+
+def _macro_check(distance: float | None, prefix: str = "", limit: float = GOOD_DISTANCE) -> str:
     """How a custom food's recipe macros compare with the logged ones."""
     if distance is None:
         return f"{prefix}not checked"
     text = f"{prefix}off {distance * 100:.0f}%"
-    return f"⚠ {text}" if distance > GOOD_DISTANCE else text
+    return f"⚠ {text}" if distance > limit else text
 
 
 def _custom_foods_line(coverage: dict) -> tuple[str, bool] | None:
@@ -161,8 +197,9 @@ def _custom_foods_line(coverage: dict) -> tuple[str, bool] | None:
     for recipe in recipes:
         for food in recipe["foods"]:
             distance = food["macro_distance"]
-            described.append(f"{food['name']} → {recipe['recipe']} ({_macro_check(distance)})")
-            flagged = flagged or (distance is not None and distance > GOOD_DISTANCE)
+            limit = _good_distance(food)
+            described.append(f"{food['name']} → {recipe['recipe']} ({_macro_check(distance, limit=limit)})")
+            flagged = flagged or (distance is not None and distance > limit)
     return f"Custom foods: {', '.join(described)}", flagged
 
 
@@ -274,6 +311,9 @@ def print_terminal_report(result: dict, settings: dict) -> None:
     if low_confidence_line:
         # Text, not a markup string: food and USDA names can contain "[...]".
         console.print(Text(f"  ⚠ {low_confidence_line}", style="yellow"))
+    estimated_weights_line = _estimated_weights_line(coverage)
+    if estimated_weights_line:
+        console.print(Text(f"  {estimated_weights_line}", style="dim"))
 
     custom_foods_line = _custom_foods_line(coverage)
     if custom_foods_line:
@@ -375,13 +415,14 @@ HTML_TEMPLATE = """\
     {% if logged_fiber_line %}
     <p class="footnote">{{ logged_fiber_line }}</p>
     {% endif %}
-    {% if skipped_foods or not_in_usda_line or lookup_failed_line or untranslated_line or low_confidence_line %}
+    {% if skipped_foods or not_in_usda_line or lookup_failed_line or untranslated_line or low_confidence_line or estimated_weights_line %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
         {% if not_in_usda_line %}<p>⚠ {{ not_in_usda_line }}</p>{% endif %}
         {% if lookup_failed_line %}<p>⚠ {{ lookup_failed_line }}</p>{% endif %}
         {% if untranslated_line %}<p>⚠ {{ untranslated_line }}</p>{% endif %}
         {% if low_confidence_line %}<p>⚠ {{ low_confidence_line }}</p>{% endif %}
+        {% if estimated_weights_line %}<p>{{ estimated_weights_line }}</p>{% endif %}
     </div>
     {% endif %}
     {% if custom_recipes %}
@@ -442,13 +483,14 @@ def generate_html_report(result: dict, output_path: str) -> None:
         lookup_failed_line=_lookup_failed_line(coverage),
         untranslated_line=_untranslated_line(coverage),
         low_confidence_line=_low_confidence_line(coverage),
+        estimated_weights_line=_estimated_weights_line(coverage),
         logged_fiber_line=_logged_fiber_line(coverage),
         custom_recipes=[
             {
                 "recipe": recipe["recipe"],
                 "ingredients": recipe["ingredients"],
                 "foods": [
-                    {**food, "check": _macro_check(food["macro_distance"], "macros ")}
+                    {**food, "check": _macro_check(food["macro_distance"], "macros ", _good_distance(food))}
                     for food in recipe["foods"]
                 ],
             }
