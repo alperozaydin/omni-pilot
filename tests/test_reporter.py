@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from omni_pilot.reporter import generate_html_report, print_terminal_report
+from omni_pilot.reporter import _estimated_weights_line, generate_html_report, print_terminal_report
 
 
 def _make_analysis_result() -> dict:
@@ -58,6 +58,8 @@ def _make_analysis_result() -> dict:
             "untranslated_weight_pct": 1.4,
             "low_confidence_foods": [],
             "low_confidence_weight_pct": 0.0,
+            "low_confidence_kcal_pct": 0.0,
+            "estimated_weights": [],
             "custom_recipes": [],
             "logged_fiber_pct": None,
         },
@@ -71,6 +73,7 @@ def _make_analysis_result_with_low_confidence() -> dict:
         {"name": "Paprika [red]", "usda_name": "Fish, tuna salad", "macro_distance": None, "grams": 164.0},
     ]
     result["coverage"]["low_confidence_weight_pct"] = 18.4
+    result["coverage"]["low_confidence_kcal_pct"] = 16.2
     return result
 
 
@@ -192,7 +195,7 @@ class TestLowConfidenceWarning:
         settings = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
         print_terminal_report(_make_analysis_result_with_low_confidence(), settings)
         out = capsys.readouterr().out
-        assert "Low-confidence matches (18% of analysed weight)" in out
+        assert "Low-confidence matches (18% of analysed weight, 16% of calories)" in out
         assert "Salzlakenkaese salat → Cheese, feta (off 396%)" in out
         # No distance: no "(off ...)", and brackets in names are printed, not parsed as markup
         assert "Paprika [red] → Fish, tuna salad" in out
@@ -208,7 +211,7 @@ class TestLowConfidenceWarning:
         generate_html_report(_make_analysis_result_with_low_confidence(), html_path)
         with open(html_path) as f:
             html = f.read()
-        assert "Low-confidence matches (18% of analysed weight)" in html
+        assert "Low-confidence matches (18% of analysed weight, 16% of calories)" in html
         assert "Salzlakenkaese salat → Cheese, feta (off 396%)" in html
 
     def test_html_omits_warning_when_all_matches_are_good(self, tmp_path):
@@ -238,8 +241,8 @@ def _make_analysis_result_with_custom_foods() -> dict:
                 {"fdc_id": 170393, "usda_name": "Carrots, raw", "share_pct": 40.0},
             ],
             "foods": [
-                {"name": "Misch Salat Rohkost", "grams": 750.0, "macro_distance": 0.12},
-                {"name": "Salat [Manhattan]", "grams": 120.0, "macro_distance": None},
+                {"name": "Misch Salat Rohkost", "grams": 750.0, "macro_distance": 0.12, "fitted": False},
+                {"name": "Salat [Manhattan]", "grams": 120.0, "macro_distance": None, "fitted": False},
             ],
         },
         {
@@ -247,7 +250,7 @@ def _make_analysis_result_with_custom_foods() -> dict:
             "ingredients": [
                 {"fdc_id": 170457, "usda_name": "Tomatoes, red, ripe, raw, year round average", "share_pct": 100.0},
             ],
-            "foods": [{"name": "Salat Caprese", "grams": 264.0, "macro_distance": 0.4}],
+            "foods": [{"name": "Salat Caprese", "grams": 264.0, "macro_distance": 0.4, "fitted": False}],
         },
     ]
     return result
@@ -418,3 +421,97 @@ class TestLeftOutDay:
     def test_terminal_says_nothing_when_no_day_was_left_out(self, capsys):
         print_terminal_report(_make_analysis_result(), {})
         assert "left out" not in capsys.readouterr().out
+
+
+def _estimates(logged_g: float, estimated_g: float | None, distance: float | None, n: int = 1) -> list[dict]:
+    return [{"logged_g": logged_g, "estimated_g": estimated_g, "macro_distance": distance}] * n
+
+
+ESTIMATED_WEIGHTS = [
+    {"name": "King's Steakhouse Double", "estimates": _estimates(100.0, 335.2, 0.04, n=2)},
+    {"name": "Ben's", "estimates": _estimates(100.0, 143.0, 0.22, n=2)},
+]
+
+
+class TestEstimatedWeightsReport:
+    SETTINGS = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+
+    def _result(self, estimated_weights: list[dict]) -> dict:
+        result = _make_analysis_result()
+        result["coverage"]["estimated_weights"] = estimated_weights
+        return result
+
+    def test_line_collapses_repeats_and_flags_poor_fits(self):
+        assert _estimated_weights_line({"estimated_weights": ESTIMATED_WEIGHTS}) == (
+            "Estimated weights (logged as 100 g, impossible for their macros): "
+            "King's Steakhouse Double 100 g → 335 g (×2), Ben's 100 g → 143 g (×2, ⚠ off 22%)"
+        )
+
+    def test_distinct_servings_are_listed_separately(self):
+        food = {"name": "King's", "estimates": _estimates(100.0, 335.0, 0.04) + _estimates(100.0, 168.0, 0.04)}
+        assert _estimated_weights_line({"estimated_weights": [food]}) == (
+            "Estimated weights (logged as 100 g, impossible for their macros): "
+            "King's 100 g → 335 g, King's 100 g → 168 g"
+        )
+
+    def test_no_fit_says_weight_not_estimated(self):
+        food = {"name": "Mystery Bowl", "estimates": _estimates(100.0, None, None)}
+        assert _estimated_weights_line({"estimated_weights": [food]}) == (
+            "Estimated weights (logged as 100 g, impossible for their macros): "
+            "Mystery Bowl 100 g (weight not estimated)"
+        )
+
+    def test_no_estimated_weights_gives_none(self):
+        assert _estimated_weights_line({"estimated_weights": []}) is None
+
+    def test_terminal_prints_the_line(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        print_terminal_report(self._result(ESTIMATED_WEIGHTS), self.SETTINGS)
+        assert "King's Steakhouse Double 100 g → 335 g (×2)" in capsys.readouterr().out
+
+    def test_terminal_omits_the_line_without_estimates(self, capsys):
+        print_terminal_report(_make_analysis_result(), self.SETTINGS)
+        assert "Estimated weights" not in capsys.readouterr().out
+
+    def test_html_shows_the_line_in_the_warnings(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(self._result(ESTIMATED_WEIGHTS), html_path)
+        with open(html_path) as f:
+            html = f.read()
+        assert "Estimated weights (logged as 100 g" in html
+        assert html.index("Estimated weights") > html.index('<div class="warnings">')
+
+    def test_html_omits_the_line_without_estimates(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(_make_analysis_result(), html_path)
+        with open(html_path) as f:
+            assert "Estimated weights" not in f.read()
+
+
+class TestFittedCustomFoods:
+    SETTINGS = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+
+    def _result(self, fitted: bool) -> dict:
+        result = _make_analysis_result()
+        result["coverage"]["custom_recipes"] = [{
+            "recipe": "chicken_rice",
+            "ingredients": [{"fdc_id": 1, "usda_name": "Chicken", "share_pct": 100.0}],
+            "foods": [{"name": "Chicken and Rice", "grams": 700.0, "macro_distance": 0.2, "fitted": fitted}],
+        }]
+        return result
+
+    def test_fitted_food_is_flagged_above_good_fit_distance(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        print_terminal_report(self._result(fitted=True), self.SETTINGS)
+        assert "Chicken and Rice → chicken_rice (⚠ off 20%)" in capsys.readouterr().out
+
+    def test_food_with_real_weight_keeps_good_distance(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "300")
+        print_terminal_report(self._result(fitted=False), self.SETTINGS)
+        assert "Chicken and Rice → chicken_rice (off 20%)" in capsys.readouterr().out
+
+    def test_html_flags_fitted_food(self, tmp_path):
+        html_path = str(tmp_path / "report.html")
+        generate_html_report(self._result(fitted=True), html_path)
+        with open(html_path) as f:
+            assert "Chicken and Rice — 700 g — ⚠ macros off 20%" in f.read()
