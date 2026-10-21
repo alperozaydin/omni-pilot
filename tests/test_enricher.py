@@ -540,6 +540,15 @@ class TestNotFoundCache:
         mock_candidates.assert_called_once()
         assert db.all() == [self._not_found()]
 
+    def test_refreshed_not_found_record_keeps_fields_the_app_does_not_write(self, mocker, tmp_path):
+        # The daily review's deferred_query must survive a re-search that still finds nothing.
+        db = self._db(tmp_path, self._not_found(days_old=NOT_FOUND_TTL_DAYS, deferred_query=self.QUERY))
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([], True))
+
+        assert get_food_match(self.FOOD, self.QUERY, None, db, "fake-key") == "not_in_usda"
+
+        assert db.all() == [self._not_found(deferred_query=self.QUERY)]
+
     def test_outdated_not_found_record_is_searched_again(self, mocker, tmp_path):
         db = self._db(tmp_path, self._not_found(match_version=MATCH_VERSION - 1))
         mock_candidates = mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([], True))

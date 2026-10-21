@@ -5,7 +5,13 @@
       "source": "alperozaydin/my-skills",
       "sourceType": "github",
       "skillPath": "skills/omni-pilot-custom-foods/SKILL.md",
-      "computedHash": "252c22226b032b3e135472420af86eec8c82c45c0f6eaa0752b7c1672e28102e"
+      "computedHash": "17da29633080c57fab34b0ef972c9d67a5ea8b7daa8bcbd475de986845147d32"
+    },
+    "omni-pilot-daily-review": {
+      "source": "alperozaydin/my-skills",
+      "sourceType": "github",
+      "skillPath": "skills/omni-pilot-daily-review/SKILL.md",
+      "computedHash": "e53cb707b84dd4fd7bad605d5a99f8e394f64405b32e74343d18379e737c370e"
     },
     "pytest": {
       "source": "alperozaydin/my-skills",

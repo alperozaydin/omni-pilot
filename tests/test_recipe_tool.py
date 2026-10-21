@@ -219,6 +219,262 @@ class TestApprove:
         assert all("reviewed_fdc_id" not in e for e in ws.entries().values())
 
 
+LENTILS_NOT_FOUND = {"original_name": "Braun Linsen", "usda_query": "lentils", "not_found": True,
+                     "match_version": 1, "last_updated": "2026-10-01"}
+
+
+class TestDefer:
+    def test_marks_a_match_with_its_usda_id(self, ws, run):
+        ws.add(EGGS)
+
+        code, out = run("defer", "Boiled Eggs")
+
+        assert code == 0
+        assert "left  Boiled Eggs → Egg, whole, cooked, hard-boiled (173424)" in out
+        assert "1 left" in out
+        assert ws.entries()["Boiled Eggs"] == {**EGGS, "deferred_fdc_id": 173424}
+
+    def test_marks_a_not_found_record_with_its_query(self, ws, run):
+        ws.add(LENTILS_NOT_FOUND)
+
+        code, out = run("defer", "Braun Linsen")
+
+        assert code == 0
+        assert "left  Braun Linsen (not in USDA: lentils)" in out
+        assert ws.entries()["Braun Linsen"] == {**LENTILS_NOT_FOUND, "deferred_query": "lentils"}
+
+    def test_defers_every_named_food_including_names_with_commas(self, ws, run):
+        other = _entry("Jasmin-Reis", 168930, "Rice, white, long-grain, regular, raw, unenriched")
+        ws.add(EGGS, MELON, other)
+
+        code, out = run("defer", "Boiled Eggs", "Watermelon, Fresh")
+
+        assert code == 0
+        assert "2 left" in out
+        entries = ws.entries()
+        assert entries["Boiled Eggs"]["deferred_fdc_id"] == 173424
+        assert entries["Watermelon, Fresh"]["deferred_fdc_id"] == 167765
+        assert "deferred_fdc_id" not in entries["Jasmin-Reis"]
+
+    @pytest.mark.parametrize(("flag", "reason"), [("--impossible", "impossible"), ("--no-macros", "no_macros")])
+    def test_reason_flags_write_the_reason(self, ws, run, flag, reason):
+        ws.add(EGGS)
+
+        code, _ = run("defer", flag, "Boiled Eggs")
+
+        assert code == 0
+        assert ws.entries()["Boiled Eggs"] == {**EGGS, "deferred_fdc_id": 173424, "deferred_reason": reason}
+
+    def test_without_a_flag_a_stale_reason_is_removed(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 999, "deferred_reason": "impossible"})
+
+        code, _ = run("defer", "Boiled Eggs")
+
+        assert code == 0
+        assert ws.entries()["Boiled Eggs"] == {**EGGS, "deferred_fdc_id": 173424}
+
+    def test_deferring_a_deferred_food_changes_nothing(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424})
+
+        code, out = run("defer", "Boiled Eggs")
+
+        assert code == 0
+        assert "already left  Boiled Eggs" in out
+        assert "0 left" in out
+        assert ws.entries()["Boiled Eggs"] == {**EGGS, "deferred_fdc_id": 173424}
+
+    @pytest.mark.parametrize(("setup", "name", "reason"), [
+        (lambda ws: None, "Boiled Egs", "not a searched food"),
+        (
+            lambda ws: (ws.add(_entry("Salat Caprese", 170457, "Tomatoes, red, ripe, raw")),
+                        ws.recipe("caprese", "Salat Caprese")),
+            "Salat Caprese", "in recipe caprese",
+        ),
+        (
+            lambda ws: (ws.add(_entry("Mineralwasser", 174158, "Beverages, water, bottled")),
+                        ws.skip("Mineralwasser")),
+            "Mineralwasser", "skip",
+        ),
+        (
+            lambda ws: ws.add(_entry("Gouda", 171242, "Cheese, gouda", reviewed_fdc_id=171242)),
+            "Gouda", "is approved; nothing to leave",
+        ),
+        (
+            lambda ws: ws.add(_entry("Haferflocken", None, "Cereals, oats, regular and quick, not fortified, dry")),
+            "Haferflocken", "run analyze first",
+        ),
+    ], ids=["unknown-name", "in-a-recipe", "skipped", "approved", "no-usda-id"])
+    def test_a_refused_name_stops_the_whole_call(self, ws, run, setup, name, reason):
+        ws.add(EGGS)
+        setup(ws)
+
+        code, out = run("defer", "Boiled Eggs", name)
+
+        assert code == 1
+        assert f"✗ {name}: " in out
+        assert reason in out
+        assert "Nothing written." in out
+        assert all(not any(k.startswith("deferred_") for k in e) for e in ws.entries().values())
+
+    def test_the_flags_cannot_be_combined(self, ws, run):
+        ws.add(EGGS)
+
+        code, _ = run("defer", "--impossible", "--no-macros", "Boiled Eggs")
+
+        assert code != 0
+        assert ws.entries()["Boiled Eggs"] == EGGS
+
+
+def _export(ws, *rows: list) -> None:
+    from tests.helpers import write_food_log
+
+    (ws.root / "data").mkdir(exist_ok=True)
+    write_food_log(ws.root / "data/export.xlsx", list(rows))
+
+
+# Boiled eggs as logged: 100 g with plausible macros, and with impossible ones (200 g of macros in 100 g).
+EGGS_ROW = ["2026-10-15", "08:00", "Boiled Eggs", "g", 100, 1, 155.0, 10.6, 1.1, 12.6]
+EGGS_IMPOSSIBLE_ROW = ["2026-10-15", "08:00", "Boiled Eggs", "g", 100, 1, 1200.0, 100.0, 50.0, 50.0]
+
+
+class TestPending:
+    def test_lists_new_changed_weak_and_not_found_foods(self, ws, run):
+        weak = _entry("Risotto Alla Milanese", 168943, "Rice and vermicelli mix",
+                      confidence="weak", macro_distance=0.34)
+        ws.add(EGGS, {**MELON, "reviewed_fdc_id": 999}, weak, LENTILS_NOT_FOUND)
+
+        code, out = run("pending")
+
+        assert code == 0
+        assert "== Searched in USDA (3): is each match the same food?" in out
+        assert "== Not in USDA (1): give them a recipe" in out
+        for name in ("Boiled Eggs", "Watermelon, Fresh", "Risotto Alla Milanese", "Braun Linsen"):
+            assert name in out
+
+    def test_hides_approved_deferred_recipe_and_skipped_foods(self, ws, run):
+        ws.add(
+            EGGS,
+            _entry("Gouda", 171242, "Cheese, gouda", reviewed_fdc_id=171242),
+            {**MELON, "deferred_fdc_id": 167765},
+            _entry("Salat Caprese", 170457, "Tomatoes, red, ripe, raw"),
+            _entry("Mineralwasser", 174158, "Beverages, water, bottled"),
+            {**LENTILS_NOT_FOUND, "deferred_query": "lentils"},
+        )
+        ws.recipe("caprese", "Salat Caprese")
+        ws.skip("Mineralwasser")
+
+        code, out = run("pending")
+
+        assert code == 0
+        assert "== Searched in USDA (1)" in out
+        assert "Boiled Eggs" in out
+        for name in ("Gouda", "Watermelon, Fresh", "Salat Caprese", "Mineralwasser", "Braun Linsen", "Not in USDA"):
+            assert name not in out
+
+    def test_nothing_to_review(self, ws, run):
+        ws.add(_entry("Gouda", 171242, "Cheese, gouda", reviewed_fdc_id=171242))
+
+        code, out = run("pending")
+
+        assert code == 0
+        assert out == "Nothing to review.\n"
+
+    def test_a_deferred_food_returns_when_its_match_changes(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 999}, {**LENTILS_NOT_FOUND, "deferred_query": "old text"})
+
+        _, out = run("pending")
+
+        assert "Boiled Eggs" in out
+        assert "Braun Linsen" in out
+
+    def test_impossible_reason_returns_once_the_weight_is_fixed(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424, "deferred_reason": "impossible"})
+        _export(ws, EGGS_ROW)
+
+        _, out = run("pending")
+
+        assert "Boiled Eggs" in out
+        assert "    left for the user before (impossible logged macros); the logged macros are fine now" in out
+
+    def test_impossible_reason_returns_when_only_older_exports_hold_the_wrong_weight(self, ws, run):
+        # S3 keeps every export, so the wrong entries stay in the old ones after the fix.
+        from tests.helpers import write_food_log
+
+        ws.add({**EGGS, "deferred_fdc_id": 173424, "deferred_reason": "impossible"})
+        (ws.root / "data").mkdir()
+        wrong = [[f"2026-10-{day:02d}", "08:00", "Boiled Eggs", "g", 20, 1, 155.0, 10.6, 1.1, 36.9]
+                 for day in range(1, 11)]
+        write_food_log(ws.root / "data/2026-10-01_2026-10-10.xlsx", wrong)
+        write_food_log(ws.root / "data/2026-10-11_2026-10-11.xlsx",
+                       [["2026-10-11", "08:00", "Boiled Eggs", "g", 200, 1, 310.0, 21.2, 2.2, 25.2]])
+
+        _, out = run("pending")
+
+        assert "Boiled Eggs" in out
+        assert "the logged macros are fine now" in out
+
+    def test_impossible_reason_stays_while_the_macros_are_impossible(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424, "deferred_reason": "impossible"})
+        _export(ws, EGGS_IMPOSSIBLE_ROW)
+
+        _, out = run("pending")
+
+        assert out == "Nothing to review.\n"
+
+    def test_impossible_reason_without_logged_macros_stays_deferred(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424, "deferred_reason": "impossible"})
+
+        _, out = run("pending")
+
+        assert out == "Nothing to review.\n"
+
+    def test_no_macros_reason_returns_once_an_export_has_the_food(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424, "deferred_reason": "no_macros"})
+        _, before = run("pending")
+        _export(ws, EGGS_ROW)
+
+        _, after = run("pending")
+
+        assert before == "Nothing to review.\n"
+        assert "Boiled Eggs" in after
+        assert "    left for the user before (no logged macros); an export has them now" in after
+
+    def test_an_approved_food_is_not_pending_even_if_deferred(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424, "reviewed_fdc_id": 173424})
+
+        _, out = run("pending")
+
+        assert out == "Nothing to review.\n"
+
+    def test_entry_without_usda_id_is_not_pending(self, ws, run):
+        ws.add(_entry("Haferflocken", None, "Cereals, oats, regular and quick, not fortified, dry"))
+
+        _, out = run("pending")
+
+        assert out == "Nothing to review.\n"
+
+    def test_lists_an_approved_match_that_turned_weak(self, ws, run):
+        ws.add({**EGGS, "confidence": "weak", "macro_distance": 0.34, "reviewed_fdc_id": 173424})
+
+        _, out = run("pending")
+
+        assert "Boiled Eggs" in out
+        assert "approved before as FDC 173424; the match is now weak" in out
+
+    def test_limit_keeps_the_heaviest(self, ws, run):
+        ws.add(_entry("Light", 1, "Light food"), _entry("Heavy", 2, "Heavy food"), _entry("Middle", 3, "Middle food"))
+        _export(ws, *[["2026-10-15", "12:00", name, "g", grams, 1, 100.0, 1.0, 10.0, 10.0]
+                      for name, grams in (("Light", 100), ("Heavy", 300), ("Middle", 200))])
+
+        code, out = run("pending", "--limit", "2")
+
+        assert code == 0
+        assert "== Searched in USDA (2)" in out
+        assert out.index("Heavy") < out.index("Middle")
+        assert "Light" not in out
+        assert out.rstrip().endswith("2 of 3 shown; the rest wait for the next run")
+
+
 class TestReview:
     def test_hides_approved_matches_and_counts_both_sides(self, ws, run):
         ws.add({**EGGS, "reviewed_fdc_id": 173424}, MELON)
@@ -261,6 +517,24 @@ class TestReview:
 
         assert "Risotto Alla Milanese" in before
         assert after == before
+
+    def test_marks_a_food_left_for_the_user(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424}, {**LENTILS_NOT_FOUND, "deferred_query": "lentils"})
+
+        code, out = run("review")
+
+        assert code == 0
+        assert ("matched to  : Egg, whole, cooked, hard-boiled  [good, off 5%]\n"
+                "    left for the user by the daily review\n") in out
+        assert "    looked up as: lentils\n    left for the user by the daily review\n" in out
+
+    def test_a_stale_deferral_is_not_marked(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 999})
+
+        _, out = run("review")
+
+        assert "Boiled Eggs" in out
+        assert "left for the user" not in out
 
     def test_lists_an_approved_match_that_turned_weak(self, ws, run):
         # Same USDA food, but a re-pick now scores it weak: it needs a recipe or the user again.
