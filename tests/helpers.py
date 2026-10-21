@@ -6,6 +6,7 @@ from collections.abc import Iterable
 import openpyxl
 
 from omni_pilot.enricher import CustomFoodMatch, EnrichmentResult, LowConfidenceMatch
+from omni_pilot.matcher import UsdaMacros
 
 
 def enrichment(
@@ -17,6 +18,7 @@ def enrichment(
     untranslated: Iterable[str] = (),
     low_confidence: dict[str, LowConfidenceMatch] | None = None,
     custom: dict[str, CustomFoodMatch] | None = None,
+    matched_macros: dict[str, UsdaMacros] | None = None,
 ) -> EnrichmentResult:
     """Build an EnrichmentResult, defaulting the parts a test doesn't care about."""
     return {
@@ -27,6 +29,7 @@ def enrichment(
         "untranslated": set(untranslated),
         "low_confidence": dict(low_confidence or {}),
         "custom": dict(custom or {}),
+        "matched_macros": dict(matched_macros or {}),
     }
 
 

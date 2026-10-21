@@ -21,7 +21,8 @@ from omni_pilot.enricher import (
     get_usda_food,
     search_usda,
 )
-from omni_pilot.matcher import GOOD_DISTANCE
+from omni_pilot.custom_foods import recipe_macros
+from omni_pilot.matcher import GOOD_DISTANCE, LoggedTotals, fitted_distance
 
 
 def _usda_hit(
@@ -645,6 +646,7 @@ class TestEnrichAllFoods:
         mock_match = mocker.patch("omni_pilot.enricher.get_food_match")
         mock_match.return_value = {
             "per_100g": {"vitamin_a_mcg": 149.0}, "usda_name": "Egg", "confidence": "good", "macro_distance": 0.01,
+            "usda_macros": None,
         }
 
         result = enrich_all_foods(["Quick Add", "Boiled Eggs"], mappings, {}, db, "fake-key")
@@ -750,11 +752,12 @@ class TestEnrichAllFoods:
         mock_match = mocker.patch("omni_pilot.enricher.get_food_match")
         mock_match.return_value = {
             "per_100g": {"vitamin_a_mcg": 149.0}, "usda_name": "Egg", "confidence": "good", "macro_distance": 0.01,
+            "usda_macros": None,
         }
 
         enrich_all_foods(["Boiled Eggs"], {"Boiled Eggs": ""}, {"Boiled Eggs": EGG_LOGGED}, db, "fake-key")
 
-        mock_match.assert_called_once_with("Boiled Eggs", "Boiled Eggs", EGG_LOGGED, db, "fake-key")
+        mock_match.assert_called_once_with("Boiled Eggs", "Boiled Eggs", EGG_LOGGED, db, "fake-key", None)
 
     def test_weak_match_is_counted_and_listed_as_low_confidence(self, mocker, tmp_path):
         db = TinyDB(str(tmp_path / "test_db.json"))
@@ -918,3 +921,159 @@ class TestEnrichCustomFoods:
 
         assert result["custom"] == {}
         assert result["not_in_usda"] == {"Salat Caprese"}
+
+
+KINGS = LoggedTotals(kcal=930.0, protein_g=53.0, fat_g=56.0, carbs_g=54.0)
+KINGS_QUERY = "fast foods, cheeseburger"
+DOUBLE_CB = _candidate(7, "Fast foods, cheeseburger; double, regular patty; with condiments", 16.2, 16.2, 18.0)
+DOUBLE_CB_MACROS = {"protein_g": 16.2, "fat_g": 16.2, "carbs_g": 18.0, "fiber_g": None}
+
+
+class TestPlaceholderMatching:
+    def _entry(self, **fields) -> dict:
+        return {
+            "original_name": "King's", "usda_query": KINGS_QUERY, "usda_name": DOUBLE_CB["description"],
+            "usda_fdc_id": 7, "per_100g": {"vitamin_a_mcg": 1.0}, "confidence": "good", "macro_distance": 0.04,
+            "usda_macros": DOUBLE_CB_MACROS, "match_version": MATCH_VERSION, **fields,
+        }
+
+    def _candidates(self, mocker, candidates=(DOUBLE_CB,), complete=True):
+        return mocker.patch(
+            "omni_pilot.enricher.get_food_candidates", return_value=(list(candidates), complete),
+        )
+
+    def test_pick_with_totals_caches_matched_by_proportions(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        self._candidates(mocker)
+
+        match = get_food_match("King's", KINGS_QUERY, None, db, "fake-key", totals=KINGS)
+
+        assert match["confidence"] == "good"
+        assert match["usda_macros"] == DOUBLE_CB_MACROS
+        [entry] = db.all()
+        assert entry["matched_by"] == "proportions"
+
+    def test_pick_without_totals_caches_matched_by_per_100g(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        self._candidates(mocker)
+
+        get_food_match("King's", KINGS_QUERY, {"kcal": 250.0, "protein_g": 16.0, "fat_g": 16.0, "carbs_g": 18.0},
+                       db, "fake-key")
+
+        [entry] = db.all()
+        assert entry["matched_by"] == "per_100g"
+
+    def test_entry_without_matched_by_is_reused_for_known_weight(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry())
+        mock_candidates = self._candidates(mocker)
+
+        match = get_food_match("King's", KINGS_QUERY, None, db, "fake-key")
+
+        assert match["usda_macros"] == DOUBLE_CB_MACROS
+        mock_candidates.assert_not_called()
+
+    def test_per_100g_entry_is_repicked_when_weight_unknown(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry())
+        mock_candidates = self._candidates(mocker)
+
+        get_food_match("King's", KINGS_QUERY, None, db, "fake-key", totals=KINGS)
+
+        mock_candidates.assert_called_once()
+        [entry] = db.all()
+        assert entry["matched_by"] == "proportions"
+
+    def test_proportions_entry_is_repicked_when_weight_becomes_known(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry(matched_by="proportions"))
+        mock_candidates = self._candidates(mocker)
+
+        get_food_match("King's", KINGS_QUERY, None, db, "fake-key")
+
+        mock_candidates.assert_called_once()
+        [entry] = db.all()
+        assert entry["matched_by"] == "per_100g"
+
+    def test_matching_matched_by_is_reused(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry(matched_by="proportions"))
+        mock_candidates = self._candidates(mocker)
+
+        get_food_match("King's", KINGS_QUERY, None, db, "fake-key", totals=KINGS)
+
+        mock_candidates.assert_not_called()
+
+    def test_failed_mode_repick_keeps_entry_with_macros(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry())
+        self._candidates(mocker, candidates=(), complete=False)
+
+        match = get_food_match("King's", KINGS_QUERY, None, db, "fake-key", totals=KINGS)
+
+        assert match["confidence"] == "unverified"
+        assert match["usda_macros"] == DOUBLE_CB_MACROS
+        assert db.all() == [self._entry()]
+
+    def test_mode_repick_keeps_reviewed_fdc_id(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry(reviewed_fdc_id=7))
+        self._candidates(mocker)
+
+        get_food_match("King's", KINGS_QUERY, None, db, "fake-key", totals=KINGS)
+
+        [entry] = db.all()
+        assert entry["reviewed_fdc_id"] == 7
+
+    def test_count_outdated_counts_mode_mismatch(self, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry())
+        mappings = {"King's": KINGS_QUERY}
+        assert count_outdated_matches(["King's"], mappings, db) == 0
+        assert count_outdated_matches(["King's"], mappings, db, weight_unknown={"King's"}) == 1
+
+    def test_enrich_passes_totals_and_exposes_matched_macros(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        self._candidates(mocker)
+
+        result = enrich_all_foods(
+            ["King's"], {"King's": KINGS_QUERY}, {}, db, "fake-key", weight_unknown={"King's": KINGS},
+        )
+
+        assert "King's" in result["profiles"]
+        assert result["low_confidence"] == {}
+        assert result["matched_macros"] == {"King's": DOUBLE_CB_MACROS}
+
+    def test_matched_macros_for_custom_foods(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food",
+            side_effect=lambda fdc_id, api_key: {1: TOMATO_HIT, 2: MOZZARELLA_HIT}.get(fdc_id),
+        )
+
+        result = enrich_all_foods(["Salat Caprese"], {}, {}, db, "fake-key", custom_foods=CAPRESE_FOODS)
+
+        assert result["matched_macros"]["Salat Caprese"] == pytest.approx(recipe_macros([
+            (0.75, {"protein_g": 0.88, "fat_g": 0.2, "carbs_g": 3.89, "fiber_g": None}),
+            (0.25, {"protein_g": 22.2, "fat_g": 22.1, "carbs_g": 2.4, "fiber_g": None}),
+        ]))
+        assert result["custom"]["Salat Caprese"]["weight_unknown"] is False
+
+    def test_custom_food_with_unknown_weight_gets_fitted_distance(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food",
+            side_effect=lambda fdc_id, api_key: {1: TOMATO_HIT, 2: MOZZARELLA_HIT}.get(fdc_id),
+        )
+        totals = LoggedTotals(kcal=500.0, protein_g=25.0, fat_g=30.0, carbs_g=30.0)
+
+        result = enrich_all_foods(
+            ["Salat Caprese"], {}, {}, db, "fake-key", custom_foods=CAPRESE_FOODS,
+            weight_unknown={"Salat Caprese": totals},
+        )
+
+        match = result["custom"]["Salat Caprese"]
+        assert match["weight_unknown"] is True
+        assert match["macro_distance"] == pytest.approx(
+            fitted_distance(totals, result["matched_macros"]["Salat Caprese"])
+        )
