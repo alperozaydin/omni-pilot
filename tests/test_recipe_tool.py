@@ -219,6 +219,112 @@ class TestApprove:
         assert all("reviewed_fdc_id" not in e for e in ws.entries().values())
 
 
+LENTILS_NOT_FOUND = {"original_name": "Braun Linsen", "usda_query": "lentils", "not_found": True,
+                     "match_version": 1, "last_updated": "2026-10-01"}
+
+
+class TestDefer:
+    def test_marks_a_match_with_its_usda_id(self, ws, run):
+        ws.add(EGGS)
+
+        code, out = run("defer", "Boiled Eggs")
+
+        assert code == 0
+        assert "left  Boiled Eggs → Egg, whole, cooked, hard-boiled (173424)" in out
+        assert "1 left" in out
+        assert ws.entries()["Boiled Eggs"] == {**EGGS, "deferred_fdc_id": 173424}
+
+    def test_marks_a_not_found_record_with_its_query(self, ws, run):
+        ws.add(LENTILS_NOT_FOUND)
+
+        code, out = run("defer", "Braun Linsen")
+
+        assert code == 0
+        assert "left  Braun Linsen (not in USDA: lentils)" in out
+        assert ws.entries()["Braun Linsen"] == {**LENTILS_NOT_FOUND, "deferred_query": "lentils"}
+
+    def test_defers_every_named_food_including_names_with_commas(self, ws, run):
+        other = _entry("Jasmin-Reis", 168930, "Rice, white, long-grain, regular, raw, unenriched")
+        ws.add(EGGS, MELON, other)
+
+        code, out = run("defer", "Boiled Eggs", "Watermelon, Fresh")
+
+        assert code == 0
+        assert "2 left" in out
+        entries = ws.entries()
+        assert entries["Boiled Eggs"]["deferred_fdc_id"] == 173424
+        assert entries["Watermelon, Fresh"]["deferred_fdc_id"] == 167765
+        assert "deferred_fdc_id" not in entries["Jasmin-Reis"]
+
+    @pytest.mark.parametrize(("flag", "reason"), [("--impossible", "impossible"), ("--no-macros", "no_macros")])
+    def test_reason_flags_write_the_reason(self, ws, run, flag, reason):
+        ws.add(EGGS)
+
+        code, _ = run("defer", flag, "Boiled Eggs")
+
+        assert code == 0
+        assert ws.entries()["Boiled Eggs"] == {**EGGS, "deferred_fdc_id": 173424, "deferred_reason": reason}
+
+    def test_without_a_flag_a_stale_reason_is_removed(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 999, "deferred_reason": "impossible"})
+
+        code, _ = run("defer", "Boiled Eggs")
+
+        assert code == 0
+        assert ws.entries()["Boiled Eggs"] == {**EGGS, "deferred_fdc_id": 173424}
+
+    def test_deferring_a_deferred_food_changes_nothing(self, ws, run):
+        ws.add({**EGGS, "deferred_fdc_id": 173424})
+
+        code, out = run("defer", "Boiled Eggs")
+
+        assert code == 0
+        assert "already left  Boiled Eggs" in out
+        assert "0 left" in out
+        assert ws.entries()["Boiled Eggs"] == {**EGGS, "deferred_fdc_id": 173424}
+
+    @pytest.mark.parametrize(("setup", "name", "reason"), [
+        (lambda ws: None, "Boiled Egs", "not a searched food"),
+        (
+            lambda ws: (ws.add(_entry("Salat Caprese", 170457, "Tomatoes, red, ripe, raw")),
+                        ws.recipe("caprese", "Salat Caprese")),
+            "Salat Caprese", "in recipe caprese",
+        ),
+        (
+            lambda ws: (ws.add(_entry("Mineralwasser", 174158, "Beverages, water, bottled")),
+                        ws.skip("Mineralwasser")),
+            "Mineralwasser", "skip",
+        ),
+        (
+            lambda ws: ws.add(_entry("Gouda", 171242, "Cheese, gouda", reviewed_fdc_id=171242)),
+            "Gouda", "is approved; nothing to leave",
+        ),
+        (
+            lambda ws: ws.add(_entry("Haferflocken", None, "Cereals, oats, regular and quick, not fortified, dry")),
+            "Haferflocken", "run analyze first",
+        ),
+    ], ids=["unknown-name", "in-a-recipe", "skipped", "approved", "no-usda-id"])
+    def test_a_refused_name_stops_the_whole_call(self, ws, run, setup, name, reason):
+        ws.add(EGGS)
+        setup(ws)
+
+        code, out = run("defer", "Boiled Eggs", name)
+
+        assert code == 1
+        assert f"✗ {name}: " in out
+        assert reason in out
+        assert "Nothing written." in out
+        assert all(not any(k.startswith("deferred_") for k in e) for e in ws.entries().values())
+
+    def test_the_flags_cannot_be_combined(self, ws, run):
+        ws.add(EGGS)
+
+        code, _ = run("defer", "--impossible", "--no-macros", "Boiled Eggs")
+
+        assert code != 0
+        assert ws.entries()["Boiled Eggs"] == EGGS
+
+
 class TestReview:
     def test_hides_approved_matches_and_counts_both_sides(self, ws, run):
         ws.add({**EGGS, "reviewed_fdc_id": 173424}, MELON)
