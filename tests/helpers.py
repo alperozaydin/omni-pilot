@@ -39,6 +39,7 @@ def food_entry(
     protein_g: float = 10.0,
     fat_g: float = 5.0,
     carbs_g: float = 15.0,
+    weight_is_placeholder: bool = False,
 ) -> dict:
     """Build a parsed food-log entry with the fields the pipeline reads."""
     return {
@@ -49,6 +50,7 @@ def food_entry(
         "protein_g": protein_g,
         "fat_g": fat_g,
         "carbs_g": carbs_g,
+        "weight_is_placeholder": weight_is_placeholder,
     }
 
 

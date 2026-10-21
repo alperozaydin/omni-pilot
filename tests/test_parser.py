@@ -10,6 +10,7 @@ from omni_pilot.parser import (
     check_last_day,
     extract_unique_foods,
     generate_food_mappings,
+    is_placeholder_weight,
     parse_daily_expenditure,
     parse_food_log,
 )
@@ -169,6 +170,26 @@ class TestParseDailyExpenditure:
         expenditure = parse_daily_expenditure("data/MacroFactor-example.xlsx")
         assert expenditure
         assert all(kcal > 0 for kcal in expenditure.values())
+
+
+class TestPlaceholderWeight:
+    @pytest.mark.parametrize("serving_g, total_g, p, f, c, expected", [
+        (100.0, 100.0, 53, 56, 54, True),     # King's Steakhouse: 163 g of macros in 100 g
+        (100.0, 110.0, 55, 39, 99, True),     # Custom Chicken Doner: 1.1 x 100 g
+        (100.0, 100.0, 7, 0.4, 80.6, False),  # Basmatireis: a real 100 g serving, 88 g of macros
+        (100.0, 100.0, 25, 22, 34, False),    # Double Cheeseburger: 81 g, possible
+        (100.0, 100.0, 50, 4, 50, False),     # exactly 104 g: inside the 5% margin
+        (5.0, 5.0, 0, 5, 0, False),           # 5 g of oil: not a 100 g serving
+    ])
+    def test_rule(self, serving_g, total_g, p, f, c, expected):
+        assert is_placeholder_weight(serving_g, total_g, p, f, c) is expected
+
+    def test_parse_food_log_sets_the_flag(self, tmp_path):
+        kings = ["2026-10-11", "12:00", "King's Steakhouse Double", "serving", 1, 100, 930.0, 56.0, 54.0, 53.0]
+        reis = ["2026-10-11", "13:00", "Basmatireis", "serving", 1, 100, 356.0, 0.4, 80.6, 7.0]
+        path = write_food_log(tmp_path / "export.xlsx", [kings, reis])
+        entries = parse_food_log(path)
+        assert [e["weight_is_placeholder"] for e in entries] == [True, False]
 
 
 class TestCheckLastDay:
