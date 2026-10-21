@@ -3,9 +3,17 @@
   "skills": {
     "omni-pilot-custom-foods": {
       "source": "alperozaydin/my-skills",
+      "ref": "alozay/bar-84-daily-review",
       "sourceType": "github",
       "skillPath": "skills/omni-pilot-custom-foods/SKILL.md",
-      "computedHash": "252c22226b032b3e135472420af86eec8c82c45c0f6eaa0752b7c1672e28102e"
+      "computedHash": "033af318aa8c098948b1d17b120ae05b4318a20ddde5241b56702c75c6e512fc"
+    },
+    "omni-pilot-daily-review": {
+      "source": "alperozaydin/my-skills",
+      "ref": "alozay/bar-84-daily-review",
+      "sourceType": "github",
+      "skillPath": "skills/omni-pilot-daily-review/SKILL.md",
+      "computedHash": "18050b3c1b03f81e7f44003cf5fb6cd5e80ede0d9d664e618e1b0e6330a762a0"
     },
     "pytest": {
       "source": "alperozaydin/my-skills",

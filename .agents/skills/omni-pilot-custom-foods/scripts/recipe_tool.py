@@ -7,15 +7,20 @@ Run from the omni-pilot repo root, where config/settings.yaml lives:
 Commands:
     review [--all]   every logged food and what the app matched it to, for a check-up;
                      approved matches are hidden unless --all is given
+    pending [--limit N]
+                     foods the daily review must still read, heaviest first
     flagged          foods weakly matched by USDA search and not yet in a recipe
     search QUERY     USDA search hits (SR Legacy / Foundation) with macros and coverage
     food ID [ID...]  one or more USDA foods by FDC ID, with the nutrients they lack
     check [FILE]     validate a recipe file with the app's own loader and run the
                      app's macro check against every logged export
     approve NAME...  mark each food's USDA match as read and right (the review mark)
+    defer NAME... [--impossible | --no-macros]
+                     mark each food as left for the user by the daily review
 
-Every command is read-only except `approve`, which writes only the review mark
-(`reviewed_fdc_id`) and writes nothing when any name is refused. Ingredients
+Every command is read-only except `approve` and `defer`, which write only their
+mark (`reviewed_fdc_id`; `deferred_fdc_id` / `deferred_query` / `deferred_reason`)
+and write nothing when any name is refused. Ingredients
 fetched here are not cached, so the app still fetches and caches them itself.
 """
 from __future__ import annotations
@@ -27,6 +32,7 @@ import os
 import sys
 
 from tinydb import Query, TinyDB
+from tinydb.operations import delete
 
 from omni_pilot.cli import DEFAULT_CUSTOM_FOODS, DEFAULT_DB, DEFAULT_MAPPINGS, DEFAULT_SETTINGS
 from omni_pilot.config import load_food_mappings, load_settings, resolve_path
@@ -55,6 +61,9 @@ from omni_pilot.parser import parse_food_log
 
 N_NUTRIENTS = len(USDA_NUTRIENT_MAP)
 REVIEWED = "reviewed_fdc_id"  # the USDA ID a reviewer judged to be the logged food
+DEFERRED_FDC = "deferred_fdc_id"  # the match the daily review left for the user
+DEFERRED_QUERY = "deferred_query"  # the lookup text of a not-found record it left for the user
+DEFERRED_REASON = "deferred_reason"  # "impossible" or "no_macros": why it was left, when that can go away
 
 
 def _is_approved(entry: dict) -> bool:
@@ -64,6 +73,13 @@ def _is_approved(entry: dict) -> bool:
         and entry.get(REVIEWED) == entry.get("usda_fdc_id")
         and entry.get("confidence") != "weak"
     )
+
+
+def _is_deferred(entry: dict) -> bool:
+    """Whether the daily review left the food for the user in its current state."""
+    if entry.get("not_found"):
+        return entry.get(DEFERRED_QUERY) == entry.get("usda_query")
+    return entry.get(DEFERRED_FDC) is not None and entry.get(DEFERRED_FDC) == entry.get("usda_fdc_id")
 
 
 def _settings() -> dict:
@@ -218,6 +234,36 @@ def _implausible(m: LoggedMacros) -> bool:
     return m["protein_g"] + m["fat_g"] + m["carbs_g"] > 100 or m["kcal"] > 900
 
 
+def _food_header(name: str, logged: Logged, check_macros: bool = True) -> str:
+    """A food's first line in `review` and `pending`: what was eaten and logged."""
+    if name in logged.weight_unknown:
+        servings = logged.servings(name).removeprefix("over ")
+        return f"{name}  ({servings}; logged {_fmt_logged(logged.weight_unknown[name])})"
+    m = logged.per_100g.get(name)
+    grams = logged.grams.get(name)
+    eaten = f"{grams:.0f} g" if grams else "not in any export"
+    line = f"{name}  ({eaten}"
+    if m:
+        line += f"; logged {_fmt_logged(m)}"
+    line += ")"
+    if check_macros and m and _implausible(m):
+        line += "  !! IMPOSSIBLE LOGGED MACROS"
+    return line
+
+
+def _print_searched(name: str, entry: dict, is_approved: bool) -> None:
+    """The lines under a searched food's header: its lookup text, its match, and its review state."""
+    distance = entry.get("macro_distance")
+    off = "" if distance is None else f", off {distance:.0%}"
+    print(f"    looked up as: {entry.get('usda_query')}")
+    print(f"    matched to  : {entry.get('usda_name')}  [{entry.get('confidence', '?')}{off}]"
+          + ("  (approved)" if is_approved else ""))
+    if entry.get(REVIEWED) is not None and not is_approved:
+        same = entry[REVIEWED] == entry.get("usda_fdc_id")
+        reason = "the match is now weak" if same else "the match has changed since"
+        print(f"    approved before as FDC {entry[REVIEWED]}; {reason}")
+
+
 def cmd_review(args: argparse.Namespace) -> None:
     """Every known food with how the app resolves it, heaviest first, for a read-through."""
     settings = _settings()
@@ -247,40 +293,26 @@ def cmd_review(args: argparse.Namespace) -> None:
             groups["not looked up"].append(name)
 
     def header(name: str, check_macros: bool = True) -> str:
-        if name in logged.weight_unknown:
-            return f"{name}  ({logged.servings(name).removeprefix('over ')}; logged {_fmt_logged(logged.weight_unknown[name])})"
-        m = logged.per_100g.get(name)
-        eaten = f"{grams[name]:.0f} g" if grams.get(name) else "not in any export"
-        line = f"{name}  ({eaten}"
-        if m:
-            line += f"; logged {_fmt_logged(m)}"
-        line += ")"
-        if check_macros and m and _implausible(m):
-            line += "  !! IMPOSSIBLE LOGGED MACROS"
-        return line
+        return _food_header(name, logged, check_macros)
 
     approved = [name for name in groups["searched"] if _is_approved(matches[name])]
     print(f"== Searched in USDA ({len(groups['searched']) - len(approved)} to review, {len(approved)} approved):"
           " is each match the same food?")
     for name in groups["searched"]:
-        e = matches[name]
         is_approved = name in approved
         if is_approved and not args.all:
             continue
-        distance = e.get("macro_distance")
-        off = "" if distance is None else f", off {distance:.0%}"
         print(header(name))
-        print(f"    looked up as: {e.get('usda_query')}")
-        print(f"    matched to  : {e.get('usda_name')}  [{e.get('confidence', '?')}{off}]"
-              + ("  (approved)" if is_approved else ""))
-        if e.get(REVIEWED) is not None and not is_approved:
-            reason = "the match is now weak" if e[REVIEWED] == e.get("usda_fdc_id") else "the match has changed since"
-            print(f"    approved before as FDC {e[REVIEWED]}; {reason}")
+        _print_searched(name, matches[name], is_approved)
+        if _is_deferred(matches[name]):
+            print("    left for the user by the daily review")
     if groups["not in usda"]:
         print(f"\n== Not in USDA ({len(groups['not in usda'])}): give them a recipe")
         for name in groups["not in usda"]:
             print(header(name))
             print(f"    looked up as: {matches[name].get('usda_query')}")
+            if _is_deferred(matches[name]):
+                print("    left for the user by the daily review")
     print(f"\n== Skipped, not counted ({len(groups['skipped'])}): should any of these count?")
     for name in groups["skipped"]:
         print(header(name, check_macros=False))
@@ -291,6 +323,76 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(f"\n== Not looked up yet ({len(groups['not looked up'])}): the next analyze run will")
         for name in groups["not looked up"]:
             print(header(name))
+
+
+REASONS = {  # deferred_reason → (why it was left, why it is back)
+    "impossible": ("impossible logged macros", "the logged macros are fine now"),
+    "no_macros": ("no logged macros", "an export has them now"),
+}
+
+
+def _reason_gone(entry: dict, name: str, logged: Logged) -> bool:
+    """Whether the reason a food was left for the user no longer holds."""
+    reason = entry.get(DEFERRED_REASON)
+    if reason == "impossible":
+        if name in logged.per_100g:
+            return not _implausible(logged.per_100g[name])
+        return name in logged.weight_unknown
+    if reason == "no_macros":
+        return name in logged
+    return False
+
+
+def _is_pending(name: str, entry: dict, custom: dict, mappings: dict[str, str], logged: Logged) -> bool:
+    """Whether the daily review must still read the food: nobody has settled it in its current state."""
+    if name in custom["by_food"] or mappings.get(name, "").strip().lower() == "skip":
+        return False
+    if not entry.get("not_found") and (entry.get("usda_fdc_id") is None or _is_approved(entry)):
+        return False
+    return not _is_deferred(entry) or _reason_gone(entry, name, logged)
+
+
+def cmd_pending(args: argparse.Namespace) -> None:
+    """The foods the daily review must still read, heaviest first, in `review`'s format."""
+    settings = _settings()
+    db = _open_db(settings)
+    if db is None:
+        sys.exit("No food database found.")
+    custom = load_custom_foods(resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings))
+    mappings = _mappings(settings, db)
+    matches = {e["original_name"]: e for e in db.all()}
+    logged = _logged(settings, args.exports)
+    names = sorted(
+        (n for n, e in matches.items() if _is_pending(n, e, custom, mappings, logged)),
+        key=lambda n: (-logged.grams.get(n, 0.0), n.lower()),
+    )
+    if not names:
+        print("Nothing to review.")
+        return
+    shown = names[: args.limit] if args.limit else names
+
+    def returning(name: str) -> None:
+        entry = matches[name]
+        if _is_deferred(entry) and _reason_gone(entry, name, logged):
+            why, back = REASONS[entry[DEFERRED_REASON]]
+            print(f"    left for the user before ({why}); {back}")
+
+    searched = [n for n in shown if not matches[n].get("not_found")]
+    not_found = [n for n in shown if matches[n].get("not_found")]
+    if searched:
+        print(f"== Searched in USDA ({len(searched)}): is each match the same food?")
+        for name in searched:
+            print(_food_header(name, logged))
+            _print_searched(name, matches[name], is_approved=False)
+            returning(name)
+    if not_found:
+        print(f"\n== Not in USDA ({len(not_found)}): give them a recipe")
+        for name in not_found:
+            print(_food_header(name, logged))
+            print(f"    looked up as: {matches[name].get('usda_query')}")
+            returning(name)
+    if len(shown) < len(names):
+        print(f"\n{len(shown)} of {len(names)} shown; the rest wait for the next run")
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -434,6 +536,64 @@ def cmd_approve(args: argparse.Namespace) -> None:
     print(f"{approved} approved")
 
 
+def _defer_problem(name: str, entry: dict | None, custom: dict, mappings: dict[str, str]) -> str | None:
+    """Why a food cannot be left for the user, or None if it can."""
+    if name in custom["by_food"]:
+        return f"is in recipe {custom['by_food'][name]}; recipes need no approval"
+    if mappings.get(name, "").strip().lower() == "skip":
+        return "is mapped to skip and not counted"
+    if entry is None:
+        return "is not a searched food; check the spelling against `review`"
+    if entry.get("not_found"):
+        return None
+    if _is_approved(entry):
+        return "is approved; nothing to leave"
+    if entry.get("usda_fdc_id") is None:
+        return "has no USDA ID yet; run analyze first"
+    return None
+
+
+def cmd_defer(args: argparse.Namespace) -> None:
+    """Mark each named food as left for the user at its current match. All names or none."""
+    settings = _settings()
+    path = resolve_path("database_path", DEFAULT_DB, settings)
+    if not os.path.exists(path):
+        sys.exit("No food database found.")
+    custom = load_custom_foods(resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings))
+    reason = "impossible" if args.impossible else "no_macros" if args.no_macros else None
+    names = list(dict.fromkeys(args.foods))
+    with TinyDB(path) as db:
+        mappings = _mappings(settings, db)
+        matches = {e["original_name"]: e for e in db.all()}
+        problems = [
+            f"✗ {name}: {problem}" for name in names
+            if (problem := _defer_problem(name, matches.get(name), custom, mappings))
+        ]
+        if problems:
+            print("\n".join(problems))
+            print("Nothing written.")
+            sys.exit(1)
+        left = 0
+        for name in names:
+            entry = matches[name]
+            if entry.get("not_found"):
+                mark = {DEFERRED_QUERY: entry["usda_query"]}
+                what = f"{name} (not in USDA: {entry['usda_query']})"
+            else:
+                mark = {DEFERRED_FDC: entry["usda_fdc_id"]}
+                what = f"{name} → {entry['usda_name']} ({entry['usda_fdc_id']})"
+            if _is_deferred(entry) and entry.get(DEFERRED_REASON) == reason:
+                print(f"already left  {what}")
+                continue
+            food = Query().original_name == name
+            db.update({**mark, **({DEFERRED_REASON: reason} if reason else {})}, food)
+            if reason is None and DEFERRED_REASON in entry:
+                db.update(delete(DEFERRED_REASON), food)
+            print(f"left  {what}")
+            left += 1
+    print(f"{left} left")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -443,6 +603,11 @@ def main() -> None:
     p.add_argument("--exports", nargs="*", default=[], help=exports_help)
     p.add_argument("--all", action="store_true", help="also list matches already approved")
     p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("pending", help="foods the daily review must still read, heaviest first")
+    p.add_argument("--exports", nargs="*", default=[], help=exports_help)
+    p.add_argument("--limit", type=int, help="show at most N foods")
+    p.set_defaults(func=cmd_pending)
 
     p = sub.add_parser("flagged", help="weak USDA matches not yet in a recipe")
     p.add_argument("--exports", nargs="*", default=[], help=exports_help)
@@ -465,6 +630,15 @@ def main() -> None:
     p = sub.add_parser("approve", help="mark foods whose USDA match was read and is the right food")
     p.add_argument("foods", nargs="+", help="food names exactly as logged")
     p.set_defaults(func=cmd_approve)
+
+    p = sub.add_parser("defer", help="mark foods the daily review leaves for the user")
+    p.add_argument("foods", nargs="+", help="food names exactly as logged")
+    reasons = p.add_mutually_exclusive_group()
+    reasons.add_argument("--impossible", action="store_true",
+                         help="its logged macros are impossible; it comes back once they are fixed")
+    reasons.add_argument("--no-macros", action="store_true",
+                         help="no export has its logged macros; it comes back once one has")
+    p.set_defaults(func=cmd_defer)
 
     args = parser.parse_args()
     args.func(args)

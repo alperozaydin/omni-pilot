@@ -31,14 +31,16 @@ The same steps work in a Claude cloud session once its environment holds the
 ## The tool
 
 `scripts/recipe_tool.py` (next to this file) uses the app's own loader, USDA
-client and macro check. Only `approve` writes to the database, and only the
-review mark. Run it from the omni-pilot repo root:
+client and macro check. Only `approve` and `defer` write to the database, and
+only their mark. Run it from the omni-pilot repo root:
 
 ```bash
 T=<this skill's directory>/scripts/recipe_tool.py
 PYTHONPATH=src uv run python $T review                  # matches not yet approved, every other food (check-up)
 PYTHONPATH=src uv run python $T review --all            # same, including approved matches
 PYTHONPATH=src uv run python $T approve "Boiled Eggs"   # mark matches you read and found right
+PYTHONPATH=src uv run python $T pending                 # foods the daily review has not settled yet
+PYTHONPATH=src uv run python $T defer "Boiled Eggs"     # used by the daily review: left for the user
 PYTHONPATH=src uv run python $T flagged                 # weak matches not yet in a recipe
 PYTHONPATH=src uv run python $T search feta cheese      # find ingredient IDs
 PYTHONPATH=src uv run python $T food 169249 170457      # inspect IDs, list missing nutrients
@@ -91,6 +93,9 @@ are new or whose match the app has changed since it was approved (shown with
 - `approve` refuses weak matches, foods in a recipe, skipped foods and foods
   not in USDA: those need a recipe or the user, not a mark.
 - If the user says a listed match is fine, approve it.
+- Foods marked "left for the user by the daily review" are ones the daily
+  routine (the `omni-pilot-daily-review` skill) could not settle. Settle them
+  as usual: approve, a recipe, or tell the user.
 - Report approvals as a count ("approved 97 matches") and mention that
   `review --all` shows them.
 - After approving, run `make push` (the rules of Workflow step 6 apply), even
