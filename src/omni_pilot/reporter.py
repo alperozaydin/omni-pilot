@@ -10,6 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from omni_pilot.matcher import GOOD_DISTANCE, GOOD_FIT_DISTANCE
+from omni_pilot.parser import PARTIAL_DAY_SHARE
 
 # Status emoji and color mapping
 STATUS_DISPLAY = {
@@ -161,7 +162,7 @@ def _left_out_day_line(period: dict) -> str | None:
         return None
     return (
         f"{day['date']} left out: only {day['logged_kcal']:.0f} of {day['expenditure_kcal']:.0f} kcal "
-        "logged, under half the day's expenditure, so it looks partly logged"
+        f"logged, under {PARTIAL_DAY_SHARE:.0%} of the day's expenditure, so it looks partly logged"
     )
 
 
