@@ -8,6 +8,7 @@ from omni_pilot.matcher import (
     GOOD_FIT_DISTANCE,
     LoggedTotals,
     UsdaMacros,
+    estimate_weights,
     fit_grams,
     fitted_distance,
     head_words,
@@ -360,3 +361,39 @@ class TestLoggedMacrosForMatching:
         entry = food_entry("King's", 100.0, calories_kcal=930.0, protein_g=53.0, fat_g=56.0, carbs_g=54.0,
                            weight_is_placeholder=True)
         assert logged_macros_per_100g([entry])["King's"]["protein_g"] == pytest.approx(53.0)
+
+
+def _kings_entry(scale: float = 1.0) -> dict:
+    return food_entry(
+        "King's", 100.0, calories_kcal=930.0 * scale, protein_g=53.0 * scale, fat_g=56.0 * scale,
+        carbs_g=54.0 * scale, weight_is_placeholder=True,
+    )
+
+
+class TestEstimateWeights:
+    def test_estimates_placeholder_entry_against_its_match(self):
+        [entry] = estimate_weights([_kings_entry()], {"King's": DOUBLE_CB})
+        assert entry["total_weight_g"] == pytest.approx(335, abs=1)
+        estimate = entry["weight_estimate"]
+        assert estimate["logged_g"] == 100.0
+        assert estimate["estimated_g"] == pytest.approx(335, abs=1)
+        assert estimate["macro_distance"] == pytest.approx(0.04, abs=0.01)
+
+    def test_each_serving_gets_its_own_grams(self):
+        entries = estimate_weights([_kings_entry(), _kings_entry(0.5)], {"King's": DOUBLE_CB})
+        assert [e["total_weight_g"] for e in entries] == [pytest.approx(335, abs=1), pytest.approx(168, abs=1)]
+
+    def test_no_match_keeps_logged_weight(self):
+        [entry] = estimate_weights([_kings_entry()], {})
+        assert entry["total_weight_g"] == 100.0
+        assert entry["weight_estimate"] == {"logged_g": 100.0, "estimated_g": None, "macro_distance": None}
+
+    def test_real_weight_entries_untouched(self):
+        entry = food_entry("Reis", 150.0)
+        assert estimate_weights([entry], {"Reis": DOUBLE_CB}) == [entry]
+
+    def test_input_not_mutated(self):
+        entry = _kings_entry()
+        estimate_weights([entry], {"King's": DOUBLE_CB})
+        assert entry["total_weight_g"] == 100.0
+        assert "weight_estimate" not in entry

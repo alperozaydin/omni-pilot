@@ -72,6 +72,14 @@ class LoggedFoods(TypedDict):
     weight_unknown: dict[str, LoggedTotals]
 
 
+class WeightEstimate(TypedDict):
+    """A placeholder entry's logged grams and the grams fitted to its match."""
+
+    logged_g: float
+    estimated_g: float | None  # None: nothing to fit against
+    macro_distance: float | None
+
+
 class Candidate(TypedDict):
     """One USDA search hit, normalised for matching."""
 
@@ -188,6 +196,40 @@ def fitted_distance(logged: LoggedTotals, macros: UsdaMacros) -> float | None:
         carbs_g=logged["carbs_g"] * scale,
     )
     return macro_distance(per_100g, macros)
+
+
+def estimate_weights(entries: list[dict], matched_macros: dict[str, UsdaMacros]) -> list[dict]:
+    """Entries with each placeholder weight replaced by grams fitted to the food's match.
+
+    Every placeholder entry gets a `weight_estimate`, and its `total_weight_g`
+    becomes the fitted grams when its food has matched macros to fit against;
+    otherwise it keeps the logged weight. Each entry is fitted on its own
+    macros, so two servings of one food get their own grams. The grams are
+    worked out again on every run and never stored: they belong to a meal, not
+    to a food, and a recipe added later then applies to older exports too.
+    """
+    estimated = []
+    for entry in entries:
+        if not entry.get("weight_is_placeholder", False):
+            estimated.append(entry)
+            continue
+        logged = LoggedTotals(
+            kcal=entry["calories_kcal"], protein_g=entry["protein_g"],
+            fat_g=entry["fat_g"], carbs_g=entry["carbs_g"],
+        )
+        macros = matched_macros.get(entry["food_name"])
+        grams = fit_grams(logged, macros) if macros is not None else None
+        estimate = WeightEstimate(
+            logged_g=entry["total_weight_g"],
+            estimated_g=grams,
+            macro_distance=fitted_distance(logged, macros) if grams is not None else None,
+        )
+        estimated.append({
+            **entry,
+            "total_weight_g": grams if grams is not None else entry["total_weight_g"],
+            "weight_estimate": estimate,
+        })
+    return estimated
 
 
 def _singular(word: str) -> str:
