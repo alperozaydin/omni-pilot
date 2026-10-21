@@ -63,7 +63,8 @@ read every entry, and list for the user, heaviest first:
 - **Mixed dish matched to one ingredient** (pizza, udon with chicken, miso soup
   with rice): needs a recipe.
 - **Impossible logged macros** (`!!` in the output): a logging error, usually
-  the weight; the user fixes it in MacroFactor.
+  a weight typed in wrong; the user fixes it in MacroFactor. A photo-logged
+  meal is not one (see "Placeholder weights" below).
 - **Skipped foods that are real food** (e.g. a vegan meat substitute): a recipe
   makes them count.
 - **Not in USDA** (its own group in `review`): USDA found nothing for the
@@ -114,7 +115,8 @@ database's copy of the translation overrides the file for any food already seen.
    comment in the file.
 3. **Find ingredient IDs** with `search`, then confirm each with `food`.
 4. **Write a draft** in the scratchpad and run `check` on it until every food
-   is ✓ (at most 25% off, the app's `GOOD_DISTANCE`).
+   is ✓ (at most 25% off, the app's `GOOD_DISTANCE`; at most 15% for a
+   placeholder weight, `GOOD_FIT_DISTANCE`).
 5. **Merge into the real file** (`custom_foods_path` in `config/settings.yaml`,
    the local working copy kept in sync with S3). Keep existing recipes and
    comments; add under the matching section. Run `check` on the real file; it
@@ -159,11 +161,25 @@ Fat drives the distance most (9 kcal/g), so adjust oil, butter, cheese, nuts
 first; then protein sources; then starch. Keep amounts plausible for the dish.
 Carbs are compared both with and without fiber, as EU labels exclude fiber.
 
+## Placeholder weights
+
+MacroFactor's AI photo logging gives a meal a serving weight of 100 g whatever
+its size, with the macros of the whole meal. The app spots such an entry (100 g
+serving, more protein + fat + carbs than the entry weighs) and fits its grams
+to the match: the USDA food, or the recipe. The tool does the same. It shows
+these foods as "over N servings with a placeholder weight" with their logged
+macros in all, and `check` prints the fitted grams (`→ fitted 700 g, off 4%`).
+
+For such a dish only the proportions of protein, fat and carbs count: tune
+the recipe's shares until `check` is ✓, and leave the grams to the app. There
+is nothing to fix in MacroFactor.
+
 ## Common mistakes
 
 | Mistake | Fix |
 |---|---|
-| Stopping at "off > 25%" when the logged macros are impossible (P+F+C well above 100 g per 100 g) | It's a logging error. Write a sensible recipe, note in a comment that it stays flagged until the weight is fixed in MacroFactor, and tell the user. |
+| Stopping at "off > 25%" when the logged macros are impossible (`!!`, P+F+C well above 100 g per 100 g) | It's a weight typed in wrong. Write a sensible recipe, note in a comment that it stays flagged until the weight is fixed in MacroFactor, and tell the user. |
+| Telling the user to fix the weight of a photo-logged meal ("with a placeholder weight") | The app fits its grams. Tune the recipe's shares to the logged proportions until `check` is ✓. |
 | Trusting an ID from memory or a comment | IDs get mislabelled (169248 is iceberg, not green leaf). Always confirm with `food`. |
 | A food name with a comma in a `foods: [...]` list | `[Rice, Cooked]` is read as two names; quote it: `["Rice, Cooked"]`. `check` flags the split halves as unknown names. |
 | Listing a food in two recipes | The loader rejects it. Extend the existing recipe's `foods` instead. |
