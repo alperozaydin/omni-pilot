@@ -151,7 +151,7 @@ def _estimated_weights_line(coverage: dict) -> str | None:
                 notes.append(f"⚠ off {worst * 100:.0f}%")
             text = f"{food['name']} {logged} g → {estimated} g"
             described.append(f"{text} ({', '.join(notes)})" if notes else text)
-    return f"Estimated weights (logged as 100 g, impossible for their macros): {', '.join(described)}"
+    return f"Estimated weights (100 g placeholder servings, impossible for their macros): {', '.join(described)}"
 
 
 def _left_out_day_line(period: dict) -> str | None:

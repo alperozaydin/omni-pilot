@@ -443,21 +443,28 @@ class TestEstimatedWeightsReport:
 
     def test_line_collapses_repeats_and_flags_poor_fits(self):
         assert _estimated_weights_line({"estimated_weights": ESTIMATED_WEIGHTS}) == (
-            "Estimated weights (logged as 100 g, impossible for their macros): "
+            "Estimated weights (100 g placeholder servings, impossible for their macros): "
             "King's Steakhouse Double 100 g → 335 g (×2), Ben's 100 g → 143 g (×2, ⚠ off 22%)"
         )
 
     def test_distinct_servings_are_listed_separately(self):
         food = {"name": "King's", "estimates": _estimates(100.0, 335.0, 0.04) + _estimates(100.0, 168.0, 0.04)}
         assert _estimated_weights_line({"estimated_weights": [food]}) == (
-            "Estimated weights (logged as 100 g, impossible for their macros): "
+            "Estimated weights (100 g placeholder servings, impossible for their macros): "
             "King's 100 g → 335 g, King's 100 g → 168 g"
+        )
+
+    def test_header_fits_servings_other_than_one(self):
+        food = {"name": "Custom Chicken Doner", "estimates": _estimates(110.0, 193.0, 0.6)}
+        assert _estimated_weights_line({"estimated_weights": [food]}) == (
+            "Estimated weights (100 g placeholder servings, impossible for their macros): "
+            "Custom Chicken Doner 110 g → 193 g (⚠ off 60%)"
         )
 
     def test_no_fit_says_weight_not_estimated(self):
         food = {"name": "Mystery Bowl", "estimates": _estimates(100.0, None, None)}
         assert _estimated_weights_line({"estimated_weights": [food]}) == (
-            "Estimated weights (logged as 100 g, impossible for their macros): "
+            "Estimated weights (100 g placeholder servings, impossible for their macros): "
             "Mystery Bowl 100 g (weight not estimated)"
         )
 
@@ -478,7 +485,7 @@ class TestEstimatedWeightsReport:
         generate_html_report(self._result(ESTIMATED_WEIGHTS), html_path)
         with open(html_path) as f:
             html = f.read()
-        assert "Estimated weights (logged as 100 g" in html
+        assert "Estimated weights (100 g placeholder servings" in html
         assert html.index("Estimated weights") > html.index('<div class="warnings">')
 
     def test_html_omits_the_line_without_estimates(self, tmp_path):
