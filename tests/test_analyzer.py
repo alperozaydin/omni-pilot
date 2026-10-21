@@ -761,8 +761,8 @@ class TestCustomFoods:
         recipes = result["coverage"]["custom_recipes"]
         assert [r["recipe"] for r in recipes] == ["green_salad", "caprese"]  # 620 g before 264 g
         assert recipes[0]["foods"] == [
-            {"name": "Misch Salat Rohkost", "grams": 500.0, "macro_distance": 0.12},
-            {"name": "Salat Manhattan", "grams": 120.0, "macro_distance": None},
+            {"name": "Misch Salat Rohkost", "grams": 500.0, "macro_distance": 0.12, "fitted": False},
+            {"name": "Salat Manhattan", "grams": 120.0, "macro_distance": None, "fitted": False},
         ]  # the 0 g food is left out
         assert recipes[1]["ingredients"] == [
             {"fdc_id": 170457, "usda_name": "Tomatoes", "share_pct": 75.0},
@@ -870,3 +870,84 @@ class TestLeftOutDay:
         entries = [{"date": "2026-08-08", "time": "12:00", "food_name": "Eggs", "total_weight_g": 100.0}]
         result = analyze(entries, enrichment({"Eggs": {}}), {"nutrients": {}}, left_out_day=left_out)
         assert result["period"]["left_out_day"] == left_out
+
+
+def _estimated(food_name: str, logged_g: float, estimated_g: float | None, distance: float | None = None,
+               kcal: float = 930.0) -> dict:
+    """A placeholder entry as matcher.estimate_weights leaves it."""
+    return {
+        "date": "2026-10-11", "food_name": food_name,
+        "total_weight_g": estimated_g if estimated_g is not None else logged_g,
+        "calories_kcal": kcal, "weight_is_placeholder": True,
+        "weight_estimate": {"logged_g": logged_g, "estimated_g": estimated_g, "macro_distance": distance},
+    }
+
+
+class TestEstimatedWeights:
+    REF_RANGES = {
+        "demographic": {},
+        "nutrients": {"vitamin_a_mcg": {"name": "Vitamin A", "unit": "mcg", "type": "rda", "rda": 900}},
+    }
+
+    def test_nutrients_scale_with_estimated_grams(self):
+        entries = [_estimated("King's", 100.0, 335.0, 0.04)]
+        result = analyze(entries, enrichment({"King's": {"vitamin_a_mcg": 10.0}}), self.REF_RANGES)
+        assert result["nutrients"]["vitamin_a_mcg"]["daily_avg"] == pytest.approx(33.5)
+
+    def test_estimated_weights_listed_for_resolved_and_unresolved_foods(self):
+        entries = [
+            _estimated("King's", 100.0, 335.0, 0.04),
+            _estimated("King's", 100.0, 335.0, 0.04),
+            _estimated("Mystery Bowl", 100.0, None),
+            {"date": "2026-10-11", "food_name": "Eggs", "total_weight_g": 120.0, "calories_kcal": 170.0},
+        ]
+        result = analyze(
+            entries, enrichment({"King's": {}, "Eggs": {}}, not_in_usda={"Mystery Bowl"}), self.REF_RANGES,
+        )
+        assert result["coverage"]["estimated_weights"] == [
+            {"name": "King's", "estimates": [
+                {"logged_g": 100.0, "estimated_g": 335.0, "macro_distance": 0.04},
+                {"logged_g": 100.0, "estimated_g": 335.0, "macro_distance": 0.04},
+            ]},
+            {"name": "Mystery Bowl", "estimates": [
+                {"logged_g": 100.0, "estimated_g": None, "macro_distance": None},
+            ]},
+        ]
+
+    def test_skipped_placeholder_is_not_listed(self):
+        entries = [_estimated("Quick Add", 100.0, None, kcal=1746.0)]
+        result = analyze(entries, enrichment(skipped={"Quick Add"}), self.REF_RANGES)
+        assert result["coverage"]["estimated_weights"] == []
+
+    def test_no_estimated_weights_gives_empty_list(self):
+        entries = [{"date": "2026-10-11", "food_name": "Eggs", "total_weight_g": 120.0}]
+        result = analyze(entries, enrichment({"Eggs": {}}), self.REF_RANGES)
+        assert result["coverage"]["estimated_weights"] == []
+
+    def test_low_confidence_kcal_pct(self):
+        entries = [
+            _estimated("Chicken and Rice", 100.0, 456.0, 0.19, kcal=930.0),
+            {"date": "2026-10-11", "food_name": "Eggs", "total_weight_g": 500.0, "calories_kcal": 1070.0},
+            {"date": "2026-10-11", "food_name": "Water", "total_weight_g": 500.0, "calories_kcal": 0.0},
+        ]
+        low_confidence = {"Chicken and Rice": {"usda_name": "Chicken tenders", "macro_distance": 0.19}}
+        result = analyze(
+            entries,
+            enrichment({"Chicken and Rice": {}, "Eggs": {}}, skipped={"Water"}, low_confidence=low_confidence),
+            self.REF_RANGES,
+        )
+        assert result["coverage"]["low_confidence_kcal_pct"] == 46.5
+
+    def test_low_confidence_kcal_pct_without_calories(self):
+        entries = [{"date": "2026-10-11", "food_name": "Eggs", "total_weight_g": 100.0}]
+        result = analyze(entries, enrichment({"Eggs": {}}), self.REF_RANGES)
+        assert result["coverage"]["low_confidence_kcal_pct"] == 0.0
+
+    def test_custom_food_use_carries_fitted(self):
+        entries = [_estimated("Salat Caprese", 100.0, 400.0, 0.05)]
+        result = analyze(
+            entries, enrichment(custom={"Salat Caprese": {**_caprese(0.05), "weight_unknown": True}}),
+            self.REF_RANGES,
+        )
+        [recipe] = result["coverage"]["custom_recipes"]
+        assert recipe["foods"] == [{"name": "Salat Caprese", "grams": 400.0, "macro_distance": 0.05, "fitted": True}]

@@ -7,6 +7,7 @@ from typing import TypedDict
 
 from omni_pilot.config import get_nutrient_target
 from omni_pilot.enricher import EnrichmentResult
+from omni_pilot.matcher import WeightEstimate
 from omni_pilot.parser import LastDayCheck
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,13 @@ class CustomFoodUse(TypedDict):
     name: str
     grams: float
     macro_distance: float | None
+    # macro_distance was taken at fitted grams (the logged weight is a placeholder)
+    fitted: bool
+
+
+class EstimatedWeightFood(TypedDict):
+    name: str
+    estimates: list[WeightEstimate]  # in log order
 
 
 class CustomRecipeUse(TypedDict):
@@ -66,6 +74,10 @@ class CoverageResult(TypedDict):
     untranslated_weight_pct: float
     low_confidence_foods: list[LowConfidenceFood]
     low_confidence_weight_pct: float
+    # The same share, of analysed calories: placeholder weights can hide it by grams.
+    low_confidence_kcal_pct: float
+    # Foods with placeholder weights, outside skipped foods, by grams eaten.
+    estimated_weights: list[EstimatedWeightFood]
     custom_recipes: list[CustomRecipeUse]
     # Share of the food fiber total taken from MacroFactor's logged figures
     # rather than USDA; None when no fiber was counted at all.
@@ -133,7 +145,10 @@ def _custom_recipe_uses(
                 ],
                 foods=[],
             )
-        use["foods"].append(CustomFoodUse(name=food_name, grams=grams, macro_distance=match["macro_distance"]))
+        use["foods"].append(CustomFoodUse(
+            name=food_name, grams=grams, macro_distance=match["macro_distance"],
+            fitted=match.get("weight_unknown", False),
+        ))
     for use in by_recipe.values():
         use["foods"].sort(key=lambda food: (-food["grams"], food["name"]))
     return sorted(
@@ -208,6 +223,10 @@ def analyze(
     analysed_weight_g = 0.0
     low_confidence_weight_g: dict[str, float] = defaultdict(float)
     custom_weight_g: dict[str, float] = defaultdict(float)
+    # Calories of all analysed entries, and of weakly matched foods
+    analysed_kcal = 0.0
+    low_confidence_kcal = 0.0
+    estimates: dict[str, list[WeightEstimate]] = defaultdict(list)
     logged_fiber_total_g = 0.0
     # Consumed grams of not-in-USDA, failed and untranslated foods, per date and per kind
     unresolved_weight_by_date_g: dict[str, float] = defaultdict(float)
@@ -219,6 +238,8 @@ def analyze(
     for entry in entries:
         food_name = entry["food_name"]
         parts = _food_parts(food_name, enrichment)
+        if "weight_estimate" in entry and food_name not in enrichment["skipped"]:
+            estimates[food_name].append(entry["weight_estimate"])
 
         if parts is None:
             # A skipped food is excluded from coverage on both sides. A
@@ -248,6 +269,10 @@ def analyze(
         dates.add(entry_date)
         total_weight_g = entry["total_weight_g"]
         analysed_weight_g += total_weight_g
+        entry_kcal = entry.get("calories_kcal", 0.0)
+        analysed_kcal += entry_kcal
+        if food_name in enrichment["low_confidence"]:
+            low_confidence_kcal += entry_kcal
         if total_weight_g > 0 and food_name in enrichment["low_confidence"]:
             low_confidence_weight_g[food_name] += total_weight_g
         if total_weight_g > 0 and food_name in enrichment["custom"]:
@@ -362,6 +387,16 @@ def analyze(
         round(100.0 * sum(low_confidence_weight_g.values()) / analysed_weight_g, 1)
         if analysed_weight_g > 0 else 0.0
     )
+    low_confidence_kcal_pct = (
+        round(100.0 * low_confidence_kcal / analysed_kcal, 1) if analysed_kcal > 0 else 0.0
+    )
+    estimated_weights = sorted(
+        (EstimatedWeightFood(name=food_name, estimates=food_estimates) for food_name, food_estimates in estimates.items()),
+        key=lambda food: (
+            -sum(e["estimated_g"] if e["estimated_g"] is not None else e["logged_g"] for e in food["estimates"]),
+            food["name"],
+        ),
+    )
     food_weight_g = analysed_weight_g + not_in_usda_weight_g + lookup_failed_weight_g + untranslated_weight_g
     food_fiber_total_g = sum(daily_totals[d].get(LOGGED_NUTRIENT, 0.0) for d in sorted_dates)
     logged_fiber_pct = (
@@ -395,6 +430,8 @@ def analyze(
             untranslated_weight_pct=food_weight_pct(untranslated_weight_g),
             low_confidence_foods=low_confidence_foods,
             low_confidence_weight_pct=low_confidence_weight_pct,
+            low_confidence_kcal_pct=low_confidence_kcal_pct,
+            estimated_weights=estimated_weights,
             custom_recipes=_custom_recipe_uses(enrichment["custom"], custom_weight_g),
             logged_fiber_pct=logged_fiber_pct,
         ),
