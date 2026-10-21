@@ -112,13 +112,17 @@ class Logged:
     `per_100g` holds foods with real weights (their placeholder entries left out);
     `weight_unknown` the summed macros of foods logged only with MacroFactor's
     100 g placeholder (photo-logged meals), whose grams the app fits to the match.
+    `latest` is the same split, from only the newest export that logs each food:
+    what MacroFactor holds now, after any fix the user made to an older entry.
     """
 
-    def __init__(self, foods: LoggedFoods, grams: dict[str, float], placeholders: dict[str, int]):
+    def __init__(self, foods: LoggedFoods, grams: dict[str, float], placeholders: dict[str, int],
+                 latest: LoggedFoods):
         self.per_100g = foods["per_100g"]
         self.weight_unknown = foods["weight_unknown"]
         self.grams = grams
         self.placeholders = placeholders
+        self.latest = latest
 
     def __contains__(self, name: str) -> bool:
         return name in self.per_100g or name in self.weight_unknown
@@ -147,12 +151,17 @@ def _logged(settings: dict, extra: list[str]) -> Logged:
     """
     entries = []
     seen: set[tuple] = set()
+    newest: dict[str, tuple[str, list]] = {}  # food → (its newest export's last date, its entries there)
     logging.disable(logging.WARNING)  # the parser warns about every "Quick Add" row
     try:
         for path in _export_paths(settings, extra):
             file_entries = parse_food_log(path)
             entries += [e for e in file_entries if tuple(e.values()) not in seen]
             seen |= {tuple(e.values()) for e in file_entries}
+            last_date = max((e["date"] for e in file_entries), default="")
+            for name in {e["food_name"] for e in file_entries}:
+                if last_date >= newest.get(name, ("", []))[0]:
+                    newest[name] = (last_date, [e for e in file_entries if e["food_name"] == name])
     finally:
         logging.disable(logging.NOTSET)
     grams: dict[str, float] = {}
@@ -161,7 +170,8 @@ def _logged(settings: dict, extra: list[str]) -> Logged:
         grams[entry["food_name"]] = grams.get(entry["food_name"], 0.0) + max(entry["total_weight_g"], 0.0)
         if entry["weight_is_placeholder"]:
             placeholders[entry["food_name"]] = placeholders.get(entry["food_name"], 0) + 1
-    return Logged(logged_macros_for_matching(entries), grams, placeholders)
+    latest = logged_macros_for_matching([e for _, food_entries in newest.values() for e in food_entries])
+    return Logged(logged_macros_for_matching(entries), grams, placeholders, latest)
 
 
 def _fmt_logged(m: LoggedMacros | LoggedTotals) -> str:
@@ -335,9 +345,10 @@ def _reason_gone(entry: dict, name: str, logged: Logged) -> bool:
     """Whether the reason a food was left for the user no longer holds."""
     reason = entry.get(DEFERRED_REASON)
     if reason == "impossible":
-        if name in logged.per_100g:
-            return not _implausible(logged.per_100g[name])
-        return name in logged.weight_unknown
+        # Older exports keep the wrong entries for good, so only the newest one counts.
+        if name in logged.latest["per_100g"]:
+            return not _implausible(logged.latest["per_100g"][name])
+        return name in logged.latest["weight_unknown"]
     if reason == "no_macros":
         return name in logged
     return False

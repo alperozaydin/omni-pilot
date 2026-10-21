@@ -396,6 +396,23 @@ class TestPending:
         assert "Boiled Eggs" in out
         assert "    left for the user before (impossible logged macros); the logged macros are fine now" in out
 
+    def test_impossible_reason_returns_when_only_older_exports_hold_the_wrong_weight(self, ws, run):
+        # S3 keeps every export, so the wrong entries stay in the old ones after the fix.
+        from tests.helpers import write_food_log
+
+        ws.add({**EGGS, "deferred_fdc_id": 173424, "deferred_reason": "impossible"})
+        (ws.root / "data").mkdir()
+        wrong = [[f"2026-10-{day:02d}", "08:00", "Boiled Eggs", "g", 20, 1, 155.0, 10.6, 1.1, 36.9]
+                 for day in range(1, 11)]
+        write_food_log(ws.root / "data/2026-10-01_2026-10-10.xlsx", wrong)
+        write_food_log(ws.root / "data/2026-10-11_2026-10-11.xlsx",
+                       [["2026-10-11", "08:00", "Boiled Eggs", "g", 200, 1, 310.0, 21.2, 2.2, 25.2]])
+
+        _, out = run("pending")
+
+        assert "Boiled Eggs" in out
+        assert "the logged macros are fine now" in out
+
     def test_impossible_reason_stays_while_the_macros_are_impossible(self, ws, run):
         ws.add({**EGGS, "deferred_fdc_id": 173424, "deferred_reason": "impossible"})
         _export(ws, EGGS_IMPOSSIBLE_ROW)

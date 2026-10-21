@@ -19,7 +19,14 @@ How to judge a match and build a recipe is in the custom-foods skill,
 `.agents/skills/omni-pilot-custom-foods/SKILL.md`: read its "Check-up",
 "Workflow" (steps 3–5), "Choosing ingredients", "Tuning amounts",
 "Placeholder weights" and "Common mistakes" before settling anything. Where
-the two skills differ, this one wins: it runs without the user.
+the two skills differ, this one wins: it runs without the user. In particular,
+ignore these custom-foods instructions here:
+
+- "Extend the existing recipe's `foods` instead": never; write a new recipe.
+- "add under the matching section": append at the end of the file (step 3).
+- For impossible logged macros, "Write a sensible recipe": `defer --impossible`.
+- Ask the user for the product or label: use a typical recipe, or `defer`.
+- Do not retry the push: retry once, as step 5 says.
 
 All commands run from the repo root. The tool:
 
@@ -50,7 +57,7 @@ make pull
 Keep `settings.yaml` as the example has it. The S3 settings come from the
 environment's `OMNI_PILOT_S3_*` variables, and the environment's network
 secret replaces the placeholder USDA key. If `make pull` fails, the run has
-failed (step 7).
+failed (step 6).
 
 ## 2. Anything new?
 
@@ -83,6 +90,11 @@ report and a retry (step 5) need it.
 - **Approve** only when the name and the match are clearly the same food. When
   unsure, a recipe or `defer`. `approve` refuses weak matches; those need a
   recipe or `defer`.
+- **`defer` is for foods, never for errors.** A failed `search` or `pending`,
+  a `food` or `check` that says "not found" for an ID that `food` showed
+  earlier in this run, a timeout or any other USDA or S3 error means the run
+  has failed (step 6). Never defer a food because a tool call failed: the mark
+  would keep it out of every later run until its match changes.
 - **A food listed with "left for the user before (…)"** came back because its
   reason went away (the weight was fixed, an export now has its macros).
   Settle it like any other.
@@ -103,6 +115,9 @@ report and a retry (step 5) need it.
   possibly with the same ingredients. Its comment names the recipe it copies.
   Never add it to the existing recipe's `foods:` list.
 - Quote names with a comma: `foods: ["Rice, Cooked"]`.
+- Give each new recipe a key (its name, e.g. `mango_iced_tea:`) that is not
+  already in the file; if it is taken, add a suffix to your new key. Never
+  rename an existing one.
 
 ## 4. Check
 
@@ -110,9 +125,11 @@ report and a retry (step 5) need it.
 PYTHONPATH=src uv run python $T check
 ```
 
-It must exit 0. If it fails because of a recipe this run added, remove that
-recipe, `defer` its food instead and check again. If it fails for any other
-reason, the run has failed (step 7) and nothing is pushed.
+It must exit 0. If it fails because a recipe this run added is wrong (a food
+off the limit, a duplicate key, a name in two recipes), fix that recipe, or
+remove it and `defer` its food, then check again. If it fails for any other
+reason (a USDA error included), the run has failed (step 6) and nothing is
+pushed.
 
 ## 5. Save
 
@@ -133,9 +150,25 @@ If S3 refuses the upload ("changed in S3 since it was downloaded"), the user's
 4. Append the kept recipes again, `check`, `make push`.
 
 If the second push is refused too, nothing is saved: the run has failed
-(step 7), and tomorrow's run reads the same foods again.
+(step 6), and tomorrow's run reads the same foods again.
 
-## 6. Report
+## 6. Notify
+
+Use the `PushNotification` tool (load it with ToolSearch first if only its
+name is listed). Send exactly one push, and only in these two cases:
+
+- **Changes saved:** at least one food was approved or fixed, and `make push`
+  succeeded. Message: `Food review: 3 approved, 2 fixed, 1 left for you`.
+- **Run failed:** any step stopped the run (setup, `make pull`, a tool error,
+  `check` not passing, the push refused twice). Message:
+  `Food review failed: <step>, nothing saved`. The report (step 7) then names
+  the step and quotes the error.
+
+No push for `Nothing to review.`, and none for a run whose only outcome is
+foods left for the user. Send the push before writing the report, so the
+report stays the session's last message.
+
+## 7. Report
 
 The session's last message, in this order, leaving out empty sections:
 
@@ -156,18 +189,3 @@ Approved (3): Boiled Eggs, Watermelon, Fresh, Gouda
 Fixed foods come heaviest first, each with its old match, the new recipe with
 its shares and macro check, and the assumption. Approved foods are listed by
 name only. Each food left for the user gets the reason in a few words.
-
-## 7. Notify
-
-Use the `PushNotification` tool (load it with ToolSearch first if only its
-name is listed). Send exactly one push, and only in these two cases:
-
-- **Changes saved:** at least one food was approved or fixed, and `make push`
-  succeeded. Message: `Food review: 3 approved, 2 fixed, 1 left for you`.
-- **Run failed:** any step stopped the run (setup, `make pull`, a tool error,
-  `check` not passing, the push refused twice). Message:
-  `Food review failed: <step>, nothing saved`. The report then names the
-  step and quotes the error.
-
-No push for `Nothing to review.`, and none for a run whose only outcome is
-foods left for the user.
