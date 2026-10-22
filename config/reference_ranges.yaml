@@ -213,10 +213,10 @@ nutrients:
     name: "Fiber"
     unit: "g"
     type: "ai"
-    ai: 38              # male ≤50 years
+    ai: 30              # DGE: at least 30 g/day for adults (NIH: 38 g for males ≤50)
     ul: null            # not established
-    source: "NIH"
-    note: "38g for males ≤50, 30g for males >50."
+    source: "DGE"
+    note: "DGE: at least 30g/day for adults. NIH: 38g for males ≤50, 30g for males >50."
 
   choline_mg:
     name: "Choline"
