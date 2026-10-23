@@ -1,6 +1,6 @@
 # Omni Pilot
 
-Omni Pilot is an intelligent nutrition and workout analysis application. The first module, **Micronutrient Analysis (v1)**, analyzes your daily micronutrient intake from MacroFactor food logs, compares it against WHO/NIH recommended ranges, and surfaces deficiencies or excesses.
+Omni Pilot is an intelligent nutrition and workout analysis application. The first module, **Micronutrient Analysis (v1)**, analyzes your daily micronutrient intake from MacroFactor food logs, compares it against DGE/NIH/WHO reference values, and surfaces deficiencies or excesses.
 
 MacroFactor tracks calories and macros well, but its micronutrient tracking can be incomplete. Omni Pilot bridges this gap by automatically translating and cleaning messy food log strings with Google's **Gemini API**, querying the **USDA FoodData Central** database for complete vitamin, mineral, and amino acid profiles, and generating interactive visual reports on both desktop and mobile (**iPhone via a-Shell**).
 
@@ -15,7 +15,7 @@ MacroFactor tracks calories and macros well, but its micronutrient tracking can 
 - **USDA FoodData Central Enrichment:** Fetches complete micronutrient and essential amino acid profiles.
 - **Local TinyDB Cache:** Caches translations and USDA food profiles in `db/food_db.json` to prevent redundant network calls.
 - **Shared S3 Storage:** The food database, mappings, custom recipes and every analysed export live in a private S3 bucket, so the Mac, the iPhone and cloud sessions all work on the same data. Requests are signed by hand (AWS Signature Version 4), so no AWS SDK is needed and it still runs in a-Shell.
-- **Reference Range Comparison:** Evaluates average daily intake against configurable NIH/WHO reference ranges.
+- **Reference Range Comparison:** Evaluates average daily intake against configurable reference values in `config/reference_ranges.yaml`. Targets come from the German DGE/ÖGE reference values (3rd edition, 2025) for men aged 25 to under 51; where DGE gives no value (choline, omega-3 ALA), the NIH value is used, and EPA + DHA keeps the widely recommended 250 mg. DGE sets no upper limits, so every upper limit is NIH's. Essential amino acid targets follow FAO/WHO/UNU (2007), per kg of body weight.
 - **Supplements Support:** Automatically adds daily supplement contributions (e.g., multivitamins, Omega-3) configured in `config/supplements.yaml`.
 - **Dual Reporting:** Generates rich color-coded terminal reports and interactive, styled HTML reports (including a convenient `reports/latest.html` copy).
 - **iPhone / a-Shell & Shortcuts Ready:** 100% pure Python dependencies with zero C/Rust build requirements, designed to run smoothly on iOS inside **a-Shell** and integrate into **iOS Shortcuts**.

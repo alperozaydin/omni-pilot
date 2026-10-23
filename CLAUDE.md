@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-Omni Pilot is a Python CLI that analyzes daily micronutrient intake from MacroFactor nutrition-tracking `.xlsx` exports. It compares intake against configurable NIH/WHO reference ranges and produces terminal + HTML reports. It's designed to run identically on a Mac (via `uv`) and on an iPhone inside the **a-Shell** app (via plain `pip`/`python`), so it deliberately uses only pure-Python dependencies (no C/Rust extensions).
+Omni Pilot is a Python CLI that analyzes daily micronutrient intake from MacroFactor nutrition-tracking `.xlsx` exports. It compares intake against configurable reference values (DGE targets, NIH where DGE gives none and for every upper limit, WHO for amino acids) and produces terminal + HTML reports. It's designed to run identically on a Mac (via `uv`) and on an iPhone inside the **a-Shell** app (via plain `pip`/`python`), so it deliberately uses only pure-Python dependencies (no C/Rust extensions).
 
 ## Commands
 

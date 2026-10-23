@@ -2,17 +2,22 @@
 # Micronutrient Reference Ranges
 # =============================================================================
 # Sources:
-#   - NIH Office of Dietary Supplements (ods.od.nih.gov)
-#   - FAO/WHO/UNU Expert Consultation on Protein and Amino Acid Requirements (2007)
-#   - Dietary Guidelines for Americans (2020-2025)
+#   - Targets: DGE/ÖGE reference values, 3rd edition (Sept 2025), checked
+#     against the erratum of May 2026 (dge.de/wissenschaft/referenzwerte)
+#   - Where DGE gives no value: NIH Office of Dietary Supplements (ods.od.nih.gov)
+#   - Upper limits (ul): NIH for every nutrient, since DGE sets none
+#   - Amino acids: FAO/WHO/UNU Expert Consultation on Protein and Amino Acid
+#     Requirements (2007)
 #
 # Terminology:
-#   rda  = Recommended Dietary Allowance (meets needs of 97-98% of healthy individuals)
-#   ai   = Adequate Intake (used when RDA cannot be established)
+#   rda  = recommendation (DGE Empfehlung, NIH Recommended Dietary Allowance):
+#          meets the needs of 97-98% of healthy individuals
+#   ai   = estimate or guide value (DGE Schätzwert / Richtwert, NIH Adequate
+#          Intake): used when a recommendation cannot be derived
 #   ul   = Tolerable Upper Intake Level (max daily intake unlikely to cause harm)
 #   null = not established / not applicable
 #
-# Default values below are for: Male, 19-50 years
+# Default values below are for: men aged 25 to under 51 (DGE's age group)
 # Adjust demographic section to match your profile.
 # =============================================================================
 
@@ -29,41 +34,41 @@ nutrients:
     name: "Vitamin A"
     unit: "mcg"
     type: "rda"
-    rda: 900
+    rda: 850  # retinol activity equivalent
     ul: 3000
-    source: "NIH"
+    source: "DGE"
 
   vitamin_c_mg:
     name: "Vitamin C"
     unit: "mg"
     type: "rda"
-    rda: 90
+    rda: 110
     ul: 2000
-    source: "NIH"
+    source: "DGE"
 
   vitamin_d_mcg:
     name: "Vitamin D"
     unit: "mcg"
-    type: "rda"
-    rda: 15
+    type: "ai"
+    ai: 20  # without endogenous synthesis
     ul: 100
-    source: "NIH"
+    source: "DGE"
 
   vitamin_e_mg:
     name: "Vitamin E"
     unit: "mg"
-    type: "rda"
-    rda: 15
+    type: "ai"
+    ai: 8  # RRR-alpha-tocopherol (NIH: 15)
     ul: 1000
-    source: "NIH"
+    source: "DGE"
 
   vitamin_k_mcg:
     name: "Vitamin K"
     unit: "mcg"
     type: "ai"
-    ai: 120
+    ai: 70
     ul: null          # not established
-    source: "NIH"
+    source: "DGE"
 
   b1_thiamine_mg:
     name: "Vitamin B1 (Thiamine)"
@@ -71,23 +76,23 @@ nutrients:
     type: "rda"
     rda: 1.2
     ul: null          # not established
-    source: "NIH"
+    source: "DGE"
 
   b2_riboflavin_mg:
     name: "Vitamin B2 (Riboflavin)"
     unit: "mg"
     type: "rda"
-    rda: 1.3
+    rda: 1.4
     ul: null          # not established
-    source: "NIH"
+    source: "DGE"
 
   b3_niacin_mg:
     name: "Vitamin B3 (Niacin)"
     unit: "mg"
     type: "rda"
-    rda: 16
+    rda: 15  # niacin equivalents; USDA's preformed niacin can only understate
     ul: 35
-    source: "NIH"
+    source: "DGE"
 
   b5_pantothenic_acid_mg:
     name: "Vitamin B5 (Pantothenic Acid)"
@@ -95,31 +100,31 @@ nutrients:
     type: "ai"
     ai: 5
     ul: null          # not established
-    source: "NIH"
+    source: "DGE"
 
   b6_pyridoxine_mg:
     name: "Vitamin B6 (Pyridoxine)"
     unit: "mg"
     type: "rda"
-    rda: 1.3
+    rda: 1.6
     ul: 100
-    source: "NIH"
+    source: "DGE"
 
   b12_cobalamin_mcg:
     name: "Vitamin B12 (Cobalamin)"
     unit: "mcg"
-    type: "rda"
-    rda: 2.4
+    type: "ai"
+    ai: 4.0
     ul: null          # not established
-    source: "NIH"
+    source: "DGE"
 
   folate_mcg:
     name: "Folate"
     unit: "mcg"
     type: "rda"
-    rda: 400
+    rda: 300  # folate equivalents; food folate counts the same
     ul: 1000
-    source: "NIH"
+    source: "DGE"
 
 # -----------------------------------------------------------------------------
 # Minerals
@@ -130,81 +135,81 @@ nutrients:
     type: "rda"
     rda: 1000
     ul: 2500
-    source: "NIH"
+    source: "DGE"
 
   iron_mg:
     name: "Iron"
     unit: "mg"
     type: "rda"
-    rda: 8
+    rda: 11
     ul: 45
-    source: "NIH"
+    source: "DGE"
 
   zinc_mg:
     name: "Zinc"
     unit: "mg"
     type: "rda"
-    rda: 11
+    rda: 14  # moderate phytate intake (DGE: 11 low, 16 high)
     ul: 40
-    source: "NIH"
+    source: "DGE"
 
   magnesium_mg:
     name: "Magnesium"
     unit: "mg"
-    type: "rda"
-    rda: 420           # 400 for 19-30, 420 for 31-50
+    type: "ai"
+    ai: 350
     ul: null           # UL of 350mg applies only to supplements, not food
-    source: "NIH"
-    note: "RDA is 400mg for ages 19-30, 420mg for 31-50. UL (350mg) applies to supplemental magnesium only, not dietary intake."
+    source: "DGE"
+    note: "NIH's UL (350mg) applies to supplemental magnesium only, not dietary intake."
 
   manganese_mg:
     name: "Manganese"
     unit: "mg"
     type: "ai"
-    ai: 2.3
+    ai: 2.0  # lower bound of DGE's 2.0-5.0 range
     ul: 11
-    source: "NIH"
+    source: "DGE"
 
   phosphorus_mg:
     name: "Phosphorus"
     unit: "mg"
-    type: "rda"
-    rda: 700
+    type: "ai"
+    ai: 550
     ul: 4000
-    source: "NIH"
+    source: "DGE"
 
   potassium_mg:
     name: "Potassium"
     unit: "mg"
     type: "ai"
-    ai: 3400
+    ai: 4000
     ul: null          # not established
-    source: "NIH"
+    source: "DGE"
 
   selenium_mcg:
     name: "Selenium"
     unit: "mcg"
-    type: "rda"
-    rda: 55
+    type: "ai"
+    ai: 70
     ul: 400
-    source: "NIH"
+    source: "DGE"
 
   copper_mg:
     name: "Copper"
     unit: "mg"
-    type: "rda"
-    rda: 0.9
+    type: "ai"
+    ai: 1.0  # lower bound of DGE's 1.0-1.5 range
     ul: 10
-    source: "NIH"
+    source: "DGE"
 
   sodium_mg:
     name: "Sodium"
     unit: "mg"
     type: "ai"
-    ai: 1500           # adequate intake
+    ai: 1500
     ul: 2300            # chronic disease risk reduction intake (CDRR)
-    source: "NIH / Dietary Guidelines for Americans"
-    note: "AI is 1500mg. UL here represents the CDRR — intake above 2300mg increases chronic disease risk."
+    source: "DGE"
+    note: "DGE estimate is 1500mg. UL here is NIH's chronic disease risk reduction intake (CDRR): intake above 2300mg increases chronic disease risk."
 
 # -----------------------------------------------------------------------------
 # Other
@@ -222,7 +227,7 @@ nutrients:
     name: "Choline"
     unit: "mg"
     type: "ai"
-    ai: 550
+    ai: 550  # DGE gives no value
     ul: 3500
     source: "NIH"
 
@@ -230,7 +235,7 @@ nutrients:
     name: "Omega-3 (ALA)"
     unit: "g"
     type: "ai"
-    ai: 1.6
+    ai: 1.6  # DGE gives 0.5% of energy, no gram value
     ul: null            # not established
     source: "NIH"
 
@@ -241,7 +246,7 @@ nutrients:
     ai: 250             # general recommendation from health organizations
     ul: null            # not established
     source: "AHA / EFSA"
-    note: "No official NIH RDA. 250-500mg/day widely recommended for heart health."
+    note: "No DGE value for adults and no NIH RDA. 250-500mg/day widely recommended for heart health."
 
 # -----------------------------------------------------------------------------
 # Amino Acids (Essential)
