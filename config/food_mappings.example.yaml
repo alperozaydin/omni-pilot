@@ -1,3 +1,6 @@
-# Map food descriptions to known names in the database
+# Written by Omni Pilot: hand edits are overwritten on the next run.
+# To change a food's USDA lookup text: make update-mapping FOOD="..." QUERY="..."
+# (without make: python -m omni_pilot.cli update-mapping "FOOD" "QUERY").
+# QUERY=skip leaves a food out of the micronutrient analysis.
 # format:
 # "Description from food log": "Searchable Name"

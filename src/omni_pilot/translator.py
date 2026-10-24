@@ -114,6 +114,53 @@ def translate_new_foods(foods_list: list[str], api_key: str, model: str = "gemin
     return json.loads(raw_text)
 
 
+def normalise_query(query: str) -> str:
+    """A lookup text as stored: stripped, and "skip" in any case as "skip" (what the enricher compares)."""
+    query = query.strip()
+    return "skip" if query.lower() == "skip" else query
+
+
+def stored_mappings(db_path: str, mappings_path: str) -> dict[str, str]:
+    """Every stored lookup text: the YAML's, overridden by the database's; empty values dropped.
+
+    A missing database reads as empty and is not created.
+    """
+    db_mappings: dict[str, str] = {}
+    if os.path.exists(db_path):
+        with TinyDB(db_path) as db:
+            db_mappings = {
+                doc["german"]: doc["english"]
+                for doc in db.table("translations").all()
+                if doc.get("english", "").strip()
+            }
+    merged = {**load_food_mappings(mappings_path), **db_mappings}
+    return {k: str(v).strip() for k, v in merged.items() if v and str(v).strip()}
+
+
+def cached_food_names(db_path: str) -> set[str]:
+    """The foods with a USDA cache entry (a match or a not-found record); empty when there is no database."""
+    if not os.path.exists(db_path):
+        return set()
+    with TinyDB(db_path) as db:
+        return {entry["original_name"] for entry in db.all() if "original_name" in entry}
+
+
+def set_mapping(food: str, query: str, db_path: str, mappings_path: str) -> None:
+    """Store a food's lookup text in the database and the YAML, and drop its USDA cache entry.
+
+    The cache entry goes now rather than on the next analyze, because the daily
+    review reads the cache without analyzing and would keep reviewing the old
+    match. Its review and defer marks go with it: they judged that match.
+    """
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+    with TinyDB(db_path) as db:
+        db.table("translations").upsert({"german": food, "english": query}, Query().german == food)
+        db.remove(Query().original_name == food)
+    mappings = load_food_mappings(mappings_path)
+    mappings[food] = query
+    generate_food_mappings([], mappings, mappings_path)
+
+
 def resolve_and_sync_mappings(
     foods: list[str],
     db_path: str,
@@ -128,22 +175,12 @@ def resolve_and_sync_mappings(
     their own name. Without a Gemini key nothing is untranslated: an
     unmapped food's own name is its query.
     """
-    # 1. Load existing mappings from YAML
-    existing_mappings = load_food_mappings(mappings_path)
+    # 1-3. Stored mappings: DB takes precedence, then existing non-empty YAML
+    known_mappings = stored_mappings(db_path, mappings_path)
 
-    # 2. Load translations from TinyDB
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     db = TinyDB(db_path)
     translations_table = db.table("translations")
-    db_mappings = {
-        doc["german"]: doc["english"]
-        for doc in translations_table.all()
-        if doc.get("english", "").strip()
-    }
-
-    # 3. Merge: DB takes precedence, then existing non-empty YAML
-    known_mappings = {**existing_mappings, **db_mappings}
-    known_mappings = {k: str(v).strip() for k, v in known_mappings.items() if v and str(v).strip()}
     new_foods = [f for f in foods if f not in known_mappings]
     untranslated: set[str] = set()
 
@@ -179,7 +216,7 @@ def resolve_and_sync_mappings(
                 logger.warning("Gemini translation failed: %s. Proceeding with unresolved items.", e)
         else:
             print("  No valid gemini_api_key found in settings. Skipping automatic translation.")
-            print(f"  You can edit {mappings_path} and fill in USDA-searchable names.")
+            print('  To set a food\'s lookup text: make update-mapping FOOD="..." QUERY="..."')
 
     # 5. Sync any manual YAML updates into TinyDB
     existing_db_translations = {
