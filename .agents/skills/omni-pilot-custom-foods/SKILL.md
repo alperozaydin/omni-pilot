@@ -68,10 +68,14 @@ read every entry, and list for the user, heaviest first:
   a weight typed in wrong; the user fixes it in MacroFactor. A photo-logged
   meal is not one (see "Placeholder weights" below).
 - **Skipped foods that are real food** (e.g. a vegan meat substitute): a recipe
-  makes them count.
+  makes them count, or a lookup text when one USDA food fits (see "Changing a
+  lookup text" below).
+- **Wrong translation:** the lookup text (`looked up as:`) itself names another
+  food, or a food that should not count (a supplement, already in
+  `supplements.yaml`) is matched to one: change the lookup text.
 - **Not in USDA** (its own group in `review`): USDA found nothing for the
-  food's lookup text; give it a recipe (see below why editing the mapping
-  does not work).
+  food's lookup text; give it a recipe, or a better lookup text when the
+  current one is odd.
 - **US-fortified match:** a German rice, bread or milk matched to an
   "enriched" or "with added vitamin A and vitamin D" entry.
 - **Custom foods marked ⚠** in `check`.
@@ -83,6 +87,7 @@ are new or whose match the app has changed since it was approved (shown with
 | Verdict | Do | Result |
 |---|---|---|
 | The match is the same food, in the same form | `approve` it | Hidden until the app changes the match |
+| The lookup text names the wrong food, or the food should not count | `update-mapping` (see below) | Re-matched on the next `analyze` |
 | The match is wrong and fixable | A recipe that passes `check` (within 25%) | In a recipe; no mark needed |
 | Cannot be settled: impossible logged macros, no plausible recipe within 25%, or the name does not say what the food is | Nothing | Listed for the user; shown again next time |
 
@@ -104,9 +109,28 @@ are new or whose match the app has changed since it was approved (shown with
 
 Foods with "not in any export" were logged in older exports only; mention
 them separately and lower. Give the list first, then fix the ones the user picks
-with the workflow below. Fix a wrong single food with a one-ingredient recipe:
-editing its lookup text in `food_mappings.yaml` does not work, because the
-database's copy of the translation overrides the file for any food already seen.
+with the workflow below.
+
+## Changing a lookup text
+
+A food's lookup text is the English USDA search text Gemini wrote for it (or
+`skip`). Change it with the app's command, never by editing
+`config/food_mappings.yaml` (the app overwrites hand edits):
+
+```bash
+make update-mapping FOOD="Haferflocken" QUERY="cereals, oats, dry"
+make update-mapping FOOD="Magnesium Kapsel" QUERY=skip   # leave the food out
+```
+
+- Use it when the lookup text is the problem: it names another food, or the
+  food should not count. The new text is searched in USDA and matched again on
+  the next `make analyze`; the old match, and any review mark on it, is removed.
+- Use a recipe instead when the lookup text is right but USDA search or the
+  matcher picks the wrong food, when an exact FDC ID must be pinned, or for a
+  mixed dish. A recipe overrides any lookup text (the command says so).
+- The command pulls from S3 first, which replaces unpushed local changes, and
+  pushes after. Run it before your other edits, or after `make push`.
+- Report it like a recipe: the food, the old and the new lookup text.
 
 ## Workflow
 
