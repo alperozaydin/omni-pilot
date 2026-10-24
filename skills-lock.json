@@ -3,14 +3,12 @@
   "skills": {
     "omni-pilot-custom-foods": {
       "source": "alperozaydin/my-skills",
-      "ref": "alozay/bar-44-update-mapping",
       "sourceType": "github",
       "skillPath": "skills/omni-pilot-custom-foods/SKILL.md",
       "computedHash": "2d9316acac78f0f9303c2c01967a31fdcebc23752228cd376b8c5d0821538f34"
     },
     "omni-pilot-daily-review": {
       "source": "alperozaydin/my-skills",
-      "ref": "alozay/bar-44-update-mapping",
       "sourceType": "github",
       "skillPath": "skills/omni-pilot-daily-review/SKILL.md",
       "computedHash": "dd0e11ab6e2c9619a2ae990a4adc8a5b7b9320e3f7bbb55f20f1fc2d55601528"
