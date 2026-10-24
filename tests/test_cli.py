@@ -1,15 +1,21 @@
 """tests/test_cli.py"""
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
 from tinydb import TinyDB
 
 from omni_pilot.cli import main
+from omni_pilot.config import load_food_mappings
 from omni_pilot.enricher import MATCH_VERSION
-from tests.helpers import enrichment, food_entry
+from omni_pilot.translator import stored_mappings
+from tests.helpers import enrichment, food_entry, food_row, write_food_log
 
 CAPRESE_RECIPE = "caprese:\n  foods: [Salat Caprese]\n  ingredients:\n    - {fdc_id: 170457, amount: 1}\n"
 
@@ -935,3 +941,196 @@ class TestCLIAnalyzeS3:
         assert exc.value.code == 1
         self.mock_report.assert_not_called()
         assert self.puts(fake) == []
+
+
+DB_WITH_OAT_MILK = json.dumps(
+    {"_default": {}, "translations": {"1": {"german": "Haferflocken", "english": "oat milk"}}}
+)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class TestCLIUpdateMapping:
+    """update-mapping sets a food's lookup text in the database and the YAML, through S3 when configured."""
+
+    FULL_S3 = TestCLIPullPush.FULL_S3
+
+    @pytest.fixture(autouse=True)
+    def _isolated(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)  # exports are read from and pulled to ./data
+        self.db = tmp_path / "db" / "food_db.json"
+        self.mappings = tmp_path / "food_mappings.yaml"
+        self.recipes = tmp_path / "recipes.yaml"
+
+    settings = TestCLIPullPush.settings
+
+    def write_db(self, content: str = DB_WITH_OAT_MILK) -> None:
+        self.db.parent.mkdir(exist_ok=True)
+        self.db.write_text(content)
+
+    def run(self, mocker, tmp_path, food, query, s3=None) -> int:
+        argv = ["omni_pilot", "update-mapping", food, query, "--settings", self.settings(tmp_path, s3)]
+        mocker.patch("sys.argv", argv)
+        try:
+            main()
+        except SystemExit as e:
+            return e.code
+        return 0
+
+    def fake(self, mocker, db: str = DB_WITH_OAT_MILK):
+        from tests.helpers import FakeS3Client
+
+        fake = FakeS3Client({
+            "food_db.json": (db.encode(), '"db-1"'),
+            "food_mappings.yaml": (b"mappings:\n  Haferflocken: oat milk\n", '"map-1"'),
+        }, bucket="omni-pilot-data")
+        mocker.patch("omni_pilot.cli.S3Client", return_value=fake)
+        return fake
+
+    def test_changes_the_lookup_text_on_local_files(self, mocker, tmp_path, capsys):
+        self.write_db()
+
+        code = self.run(mocker, tmp_path, "Haferflocken", "cereals, oats, dry")
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert '"Haferflocken": "oat milk" → "cereals, oats, dry"' in out
+        assert "S3: not configured — local files only" in out
+        assert "Takes effect on the next analyze." in out
+        assert stored_mappings(str(self.db), str(self.mappings)) == {"Haferflocken": "cereals, oats, dry"}
+        assert load_food_mappings(str(self.mappings)) == {"Haferflocken": "cereals, oats, dry"}
+
+    def test_sets_the_first_lookup_text_of_a_food_only_in_an_export(self, mocker, tmp_path, capsys):
+        (tmp_path / "data").mkdir()
+        write_food_log(tmp_path / "data" / "export.xlsx", [food_row("Haferflocken")])
+
+        code = self.run(mocker, tmp_path, "Haferflocken", "cereals, oats, dry")
+
+        assert code == 0
+        assert '"Haferflocken": "cereals, oats, dry" (set)' in capsys.readouterr().out
+        assert stored_mappings(str(self.db), str(self.mappings)) == {"Haferflocken": "cereals, oats, dry"}
+
+    def test_does_not_read_exports_when_the_database_knows_the_food(self, mocker, tmp_path):
+        self.write_db()
+        spy = mocker.patch("omni_pilot.cli.food_names_in_exports", return_value=set())
+
+        assert self.run(mocker, tmp_path, "Haferflocken", "cereals, oats, dry") == 0
+        spy.assert_not_called()
+
+    def test_unknown_or_wrongly_cased_name_suggests_and_writes_nothing(self, mocker, tmp_path, capsys):
+        self.write_db()
+        before = self.db.read_bytes()
+
+        code = self.run(mocker, tmp_path, "haferflocken", "cereals, oats, dry")
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert 'Unknown food "haferflocken"' in out
+        assert 'Did you mean: "Haferflocken"' in out
+        assert self.db.read_bytes() == before
+        assert not self.mappings.exists()
+
+    def test_short_name_in_wrong_case_is_suggested(self, mocker, tmp_path, capsys):
+        self.write_db(json.dumps({"_default": {}, "translations": {"1": {"german": "Brot", "english": "bread"}}}))
+
+        code = self.run(mocker, tmp_path, "BROT", "bread, whole-wheat")
+
+        assert code == 1
+        assert 'Did you mean: "Brot"' in capsys.readouterr().out
+
+    @pytest.mark.parametrize("food, query", [("  ", "x"), ("Haferflocken", "   ")])
+    def test_empty_food_or_query_exits_1(self, mocker, tmp_path, capsys, food, query):
+        self.write_db()
+
+        assert self.run(mocker, tmp_path, food, query) == 1
+        assert "must not be empty" in capsys.readouterr().out
+
+    def test_same_value_writes_and_pushes_nothing(self, mocker, tmp_path, capsys):
+        skipped = json.dumps({"_default": {}, "translations": {"1": {"german": "Haferflocken", "english": "skip"}}})
+        fake = self.fake(mocker, skipped)
+
+        code = self.run(mocker, tmp_path, "Haferflocken", " Skip ", s3=self.FULL_S3)
+
+        assert code == 0
+        assert '"Haferflocken" is already "skip"' in capsys.readouterr().out
+        assert fake.puts == []
+
+    def test_food_in_a_recipe_is_written_with_a_note(self, mocker, tmp_path, capsys):
+        self.recipes.write_text(CAPRESE_RECIPE)
+
+        code = self.run(mocker, tmp_path, "Salat Caprese", "skip")
+
+        assert code == 0
+        assert 'custom recipe "caprese", which takes precedence' in capsys.readouterr().out
+        assert stored_mappings(str(self.db), str(self.mappings))["Salat Caprese"] == "skip"
+
+    def test_invalid_recipes_file_only_skips_the_recipe_check(self, mocker, tmp_path, capsys):
+        self.write_db()
+        self.recipes.write_text("caprese: [")
+
+        code = self.run(mocker, tmp_path, "Haferflocken", "cereals, oats, dry")
+
+        assert code == 0
+        assert "so it was not checked for a recipe" in capsys.readouterr().out
+
+    def test_with_s3_pulls_first_and_pushes_the_change(self, mocker, tmp_path, capsys):
+        fake = self.fake(mocker)
+
+        code = self.run(mocker, tmp_path, "Haferflocken", "cereals, oats, dry", s3=self.FULL_S3)
+
+        assert code == 0
+        first_put = next(i for i, call in enumerate(fake.calls) if call[0] == "put")
+        assert ("get", "food_db.json") in fake.calls[:first_put]
+        assert ("list", "exports/") in fake.calls[:first_put]
+        assert {p["key"] for p in fake.puts} >= {"food_db.json", "food_mappings.yaml"}
+        assert b"cereals, oats, dry" in fake.objects["food_db.json"][0]
+        assert "uploaded" in capsys.readouterr().out
+
+    def test_failed_pull_exits_1_and_writes_nothing(self, mocker, tmp_path, capsys):
+        fake = self.fake(mocker)
+        fake.fail_get_on = "food_db.json"
+
+        code = self.run(mocker, tmp_path, "Haferflocken", "cereals, oats, dry", s3=self.FULL_S3)
+
+        assert code == 1
+        assert "S3 not reachable" in capsys.readouterr().out
+        assert not self.db.exists()
+        assert fake.puts == []
+
+    def test_push_conflict_keeps_the_local_change_and_hints_pull(self, mocker, tmp_path, capsys):
+        from omni_pilot.s3 import S3Error
+
+        fake = self.fake(mocker)
+        fake.put = mocker.Mock(side_effect=S3Error("conflict", "food_db.json changed in S3."))
+
+        code = self.run(mocker, tmp_path, "Haferflocken", "cereals, oats, dry", s3=self.FULL_S3)
+
+        assert code == 1
+        assert "make pull" in capsys.readouterr().out
+        assert stored_mappings(str(self.db), str(self.mappings))["Haferflocken"] == "cereals, oats, dry"
+
+    def test_incomplete_s3_settings_exits_1(self, mocker, tmp_path, capsys):
+        code = self.run(mocker, tmp_path, "Haferflocken", "x", s3={"bucket": "omni-pilot-data"})
+
+        assert code == 1
+        assert "region" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make not installed")
+@pytest.mark.parametrize("args", [["QUERY=x"], ["FOOD=x"]])
+def test_make_update_mapping_needs_food_and_query(args):
+    done = subprocess.run(["make", "-n", "update-mapping", *args], cwd=REPO_ROOT, capture_output=True, text=True)
+
+    assert done.returncode != 0
+    assert "Usage: make update-mapping" in done.stderr
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make not installed")
+def test_make_update_mapping_hands_food_and_query_to_the_shell_unexpanded():
+    """Quotes and $ in a name would be mangled if make pasted the values into the command line."""
+    done = subprocess.run(
+        ["make", "-n", "update-mapping", 'FOOD=Müsli "Bio": Nuss', "QUERY=a $HOME b"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+
+    assert done.returncode == 0
+    assert """update-mapping 'Müsli "Bio": Nuss' 'a $HOME b'""" in done.stdout

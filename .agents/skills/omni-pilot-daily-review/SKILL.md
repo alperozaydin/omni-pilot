@@ -38,7 +38,7 @@ PYTHONPATH=src uv run python $T <command>
 ## Never
 
 - Ask the user a question, or wait for an answer.
-- Run `analyze`, or edit `config/food_mappings.yaml`.
+- Run `analyze` or `update-mapping`, or edit `config/food_mappings.yaml`.
 - Commit, push or open anything in git. Everything this run changes lives in S3.
 - Change an existing recipe in `config/custom_foods.yaml`: no edit, re-tune,
   rename or removal, and no name added to an existing `foods:` list. This

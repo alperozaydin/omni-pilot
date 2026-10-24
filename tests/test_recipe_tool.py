@@ -14,6 +14,8 @@ import pytest
 import yaml
 from tinydb import TinyDB
 
+from omni_pilot.translator import set_mapping
+
 INSTALLED_TOOL = (
     Path(__file__).resolve().parents[1] / ".agents/skills/omni-pilot-custom-foods/scripts/recipe_tool.py"
 )
@@ -445,6 +447,17 @@ class TestPending:
         _, out = run("pending")
 
         assert out == "Nothing to review.\n"
+
+    def test_a_food_whose_lookup_text_changed_is_no_longer_pending(self, ws, run):
+        ws.add(EGGS)
+        _, before = run("pending")
+
+        set_mapping("Boiled Eggs", "egg, whole, cooked, hard-boiled", str(ws.db_path),
+                    str(ws.root / "config/food_mappings.yaml"))
+        _, after = run("pending")
+
+        assert "Boiled Eggs" in before
+        assert after == "Nothing to review.\n"
 
     def test_entry_without_usda_id_is_not_pending(self, ws, run):
         ws.add(_entry("Haferflocken", None, "Cereals, oats, regular and quick, not fortified, dry"))

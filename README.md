@@ -150,7 +150,20 @@ make push   # upload the data files that changed since the last pull
 PYTHONPATH=src uv run python -m omni_pilot.cli push --export data/MacroFactor-Export.xlsx
 ```
 
-Use these around hand edits of `config/custom_foods.yaml` or `config/food_mappings.yaml`: pull, edit, push. The next pull overwrites an edit that was not pushed.
+Use these around hand edits of `config/custom_foods.yaml`: pull, edit, push. The next pull overwrites an edit that was not pushed. `config/food_mappings.yaml` is written by the app and hand edits to it are overwritten; change a food's lookup text with `make update-mapping` instead (below).
+
+### Change a Food's Lookup Text
+
+Each logged food has a lookup text: the English, USDA-searchable name Gemini wrote for it, or `skip`. When Gemini got it wrong, or a food should not count (a supplement already in `supplements.yaml`), set it with:
+
+```bash
+make update-mapping FOOD="Haferflocken" QUERY="cereals, oats, dry"
+make update-mapping FOOD="Magnesium Kapsel" QUERY=skip
+# without make (iPhone / a-Shell):
+python -m omni_pilot.cli update-mapping "Haferflocken" "cereals, oats, dry"
+```
+
+The food must be one you logged (the name exactly as in MacroFactor; a near miss is refused with suggestions). The command writes the database and `config/food_mappings.yaml`, pulls from S3 before and pushes after when S3 is configured, and takes effect on the next `analyze`. A custom recipe for the food still takes precedence.
 
 ---
 

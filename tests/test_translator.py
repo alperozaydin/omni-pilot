@@ -8,7 +8,16 @@ import requests
 import yaml
 from tinydb import TinyDB
 
-from omni_pilot.translator import resolve_and_sync_mappings, translate_new_foods
+from omni_pilot.config import load_food_mappings
+from omni_pilot.parser import generate_food_mappings
+from omni_pilot.translator import (
+    cached_food_names,
+    normalise_query,
+    resolve_and_sync_mappings,
+    set_mapping,
+    stored_mappings,
+    translate_new_foods,
+)
 
 
 def test_translate_new_foods_success(mocker):
@@ -158,7 +167,7 @@ def test_resolve_and_sync_mappings_gemini_success(mocker, tmp_path):
     assert data["mappings"]["New Food"] == "egg, whole, raw, fresh"
 
 
-def test_resolve_and_sync_mappings_missing_key_graceful(tmp_path):
+def test_resolve_and_sync_mappings_missing_key_graceful(tmp_path, capsys):
     """Test graceful fallback when no Gemini key is provided."""
     db_path = str(tmp_path / "food_db.json")
     mappings_path = str(tmp_path / "food_mappings.yaml")
@@ -172,6 +181,7 @@ def test_resolve_and_sync_mappings_missing_key_graceful(tmp_path):
     assert "Unknown Food" not in mappings
     # Gemini was never asked: the food is searched in USDA under its own name
     assert untranslated == set()
+    assert "make update-mapping" in capsys.readouterr().out
 
 
 def test_resolve_and_sync_mappings_gemini_error_graceful(mocker, tmp_path):
@@ -234,3 +244,117 @@ def test_resolve_and_sync_mappings_known_foods_are_never_untranslated(mocker, tm
     )
 
     assert untranslated == {"Braune Linsen"}
+
+
+def _db(tmp_path, translations=(), cache=()) -> str:
+    path = tmp_path / "db" / "food_db.json"
+    path.parent.mkdir(exist_ok=True)
+    with TinyDB(path) as db:
+        db.table("translations").insert_multiple(list(translations))
+        db.insert_multiple(list(cache))
+    return str(path)
+
+
+def test_set_mapping_fixes_a_wrong_translation_for_good(tmp_path):
+    """BAR-44: a corrected lookup text survives the next run instead of being reverted."""
+    db = _db(tmp_path, [{"german": "Haferflocken", "english": "oat milk"}])
+    yml = tmp_path / "food_mappings.yaml"
+    generate_food_mappings(["Haferflocken"], {"Haferflocken": "oat milk"}, str(yml))
+
+    set_mapping("Haferflocken", "cereals, oats, dry", db, str(yml))
+    written = yml.read_bytes()
+    mappings, untranslated = resolve_and_sync_mappings(["Haferflocken"], db, str(yml), {})
+
+    assert mappings == {"Haferflocken": "cereals, oats, dry"}
+    assert untranslated == set()
+    assert yml.read_bytes() == written
+    assert load_food_mappings(str(yml)) == {"Haferflocken": "cereals, oats, dry"}
+
+
+@pytest.mark.parametrize("entry", [
+    {"original_name": "Haferflocken", "usda_query": "oat milk", "per_100g": {}, "reviewed_fdc_id": 1},
+    {"original_name": "Haferflocken", "usda_query": "oat milk", "not_found": True, "deferred_query": "oat milk"},
+])
+def test_set_mapping_drops_the_food_cache_entry_only(tmp_path, entry):
+    other = {"original_name": "Milch", "usda_query": "milk", "per_100g": {}}
+    db = _db(tmp_path, cache=[entry, other])
+    with TinyDB(db) as d:
+        d.table("usda_foods").insert({"fdc_id": 170457})
+
+    set_mapping("Haferflocken", "cereals, oats, dry", db, str(tmp_path / "m.yaml"))
+
+    with TinyDB(db) as d:
+        assert [e["original_name"] for e in d.all()] == ["Milch"]
+        assert d.table("usda_foods").all() == [{"fdc_id": 170457}]
+
+
+def test_set_mapping_keeps_umlauts_quotes_and_colons(tmp_path):
+    name = 'Müsli "Bio": Nuss'
+    yml = tmp_path / "m.yaml"
+
+    set_mapping(name, "muesli", _db(tmp_path), str(yml))
+
+    assert load_food_mappings(str(yml)) == {name: "muesli"}
+    assert "Müsli" in yml.read_text()
+
+
+def test_set_mapping_creates_missing_files(tmp_path):
+    db, yml = tmp_path / "db" / "food_db.json", tmp_path / "config" / "m.yaml"
+
+    set_mapping("Haferflocken", "skip", str(db), str(yml))
+
+    assert stored_mappings(str(db), str(yml)) == {"Haferflocken": "skip"}
+
+
+def test_mappings_file_header_points_to_update_mapping(tmp_path):
+    yml = tmp_path / "m.yaml"
+
+    set_mapping("Haferflocken", "skip", _db(tmp_path), str(yml))
+
+    header = yml.read_text().split("mappings:")[0]
+    assert "make update-mapping" in header
+    assert "skip" in header
+    assert "omni_pilot import" not in header
+
+
+@pytest.mark.parametrize("raw, stored", [
+    ("  Skip ", "skip"), ("SKIP", "skip"), (" cereals, oats ", "cereals, oats"), ("Skipjack tuna", "Skipjack tuna"),
+])
+def test_normalise_query(raw, stored):
+    assert normalise_query(raw) == stored
+
+
+def test_stored_mappings_database_wins_and_yaml_fills_gaps(tmp_path):
+    db = _db(tmp_path, [{"german": "A", "english": "from db"}])
+    yml = tmp_path / "m.yaml"
+    generate_food_mappings([], {"A": "from yaml", "B": "only yaml"}, str(yml))
+
+    assert stored_mappings(db, str(yml)) == {"A": "from db", "B": "only yaml"}
+
+
+def test_stored_mappings_does_not_create_a_missing_database(tmp_path):
+    db = tmp_path / "db" / "food_db.json"
+
+    assert stored_mappings(str(db), str(tmp_path / "m.yaml")) == {}
+    assert not db.exists()
+
+
+def test_set_mapping_adds_the_database_row_for_a_yaml_only_food(tmp_path):
+    db, yml = _db(tmp_path), tmp_path / "m.yaml"
+    generate_food_mappings([], {"B": "only yaml"}, str(yml))
+
+    set_mapping("B", "new", db, str(yml))
+
+    with TinyDB(db) as d:
+        assert d.table("translations").all() == [{"german": "B", "english": "new"}]
+
+
+def test_cached_food_names_reads_the_main_table_only(tmp_path):
+    db = _db(
+        tmp_path,
+        [{"german": "T", "english": "t"}],
+        [{"original_name": "M", "per_100g": {}}, {"original_name": "N", "not_found": True}],
+    )
+
+    assert cached_food_names(db) == {"M", "N"}
+    assert cached_food_names(str(tmp_path / "missing.json")) == set()

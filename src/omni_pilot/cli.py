@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import difflib
+import glob
 import logging
 import os
 import shutil
@@ -15,6 +17,7 @@ from tinydb import TinyDB
 from omni_pilot.analyzer import analyze
 from omni_pilot.config import (
     S3ConfigError,
+    load_food_mappings,
     load_reference_ranges,
     load_s3_config,
     load_settings,
@@ -25,10 +28,17 @@ from omni_pilot.custom_foods import CustomFoodsError, load_custom_foods
 from omni_pilot.enricher import count_outdated_matches, enrich_all_foods
 from omni_pilot.matcher import estimate_weights, logged_macros_for_matching
 from omni_pilot.net import prefer_ipv4_connections
-from omni_pilot.parser import check_last_day, extract_unique_foods, parse_daily_expenditure, parse_food_log
+from omni_pilot.parser import (
+    check_last_day,
+    extract_unique_foods,
+    food_names_in_exports,
+    parse_daily_expenditure,
+    parse_food_log,
+)
 from omni_pilot.reporter import generate_html_report, print_terminal_report
 from omni_pilot.s3 import S3Client, S3Error
 from omni_pilot.sync import (
+    EXPORTS_DIR,
     EXPORTS_PREFIX,
     DataFile,
     SyncError,
@@ -39,7 +49,13 @@ from omni_pilot.sync import (
     state_path,
     upload_export,
 )
-from omni_pilot.translator import resolve_and_sync_mappings
+from omni_pilot.translator import (
+    cached_food_names,
+    normalise_query,
+    resolve_and_sync_mappings,
+    set_mapping,
+    stored_mappings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,17 +124,104 @@ def cmd_push(args: argparse.Namespace) -> None:
                 continue
             key, uploaded = result
             print(f"  {key}: {'uploaded' if uploaded else 'already in S3'}")
-        labels = push(client, files, state_file)
+    except (S3Error, SyncError) as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    labels = _push_or_exit(client, files, state_file)
+    for label in labels:
+        print(f"  {label}: uploaded")
+    if not labels:
+        print(f"S3: data files in {client.config.bucket} are up to date")
+
+
+def _push_or_exit(client: S3Client, files: list[DataFile], state_file: str) -> list[str]:
+    """Push the data files that changed; a failure ends the command with exit code 1."""
+    try:
+        return push(client, files, state_file)
     except (S3Error, SyncError) as e:
         if isinstance(e, S3Error) and e.kind == "conflict":
             print(f"Error: {e} Run `make pull` (it replaces your local changes), redo them, then push again.")
         else:
             print(f"Error: {e}")
         sys.exit(1)
-    for label in labels:
-        print(f"  {label}: uploaded")
-    if not labels:
-        print(f"S3: data files in {client.config.bucket} are up to date")
+
+
+def _close_names(food: str, names: set[str]) -> list[str]:
+    """Up to three known names like `food`: the same name in another case first, then similar ones."""
+    by_folded: dict[str, list[str]] = {}
+    for name in sorted(names):
+        by_folded.setdefault(name.casefold(), []).append(name)
+    close = list(by_folded.get(food.casefold(), []))
+    for folded in difflib.get_close_matches(food.casefold(), by_folded, n=3):
+        close += [name for name in by_folded[folded] if name not in close]
+    return close[:3]
+
+
+def cmd_update_mapping(args: argparse.Namespace) -> None:
+    """Set a food's USDA lookup text in the database and food_mappings.yaml, through S3 when configured."""
+    food = args.food.strip()
+    query = normalise_query(args.query)
+    if not food or not query:
+        print("Error: FOOD and QUERY must not be empty.")
+        sys.exit(1)
+
+    settings = load_settings(args.settings or DEFAULT_SETTINGS)
+    db_path = resolve_path("database_path", DEFAULT_DB, settings)
+    mappings_path = resolve_path("mappings_path", DEFAULT_MAPPINGS, settings)
+    custom_foods_path = resolve_path("custom_foods_path", DEFAULT_CUSTOM_FOODS, settings)
+    try:
+        s3 = _s3_context(settings)
+    except S3ConfigError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    if s3 is None:
+        print("S3: not configured — local files only")
+    else:
+        client, files, state_file = s3
+        try:
+            pull(client, files, state_file)
+            pull_exports(client)
+        except (S3Error, SyncError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        print(f"S3: pulled from {client.config.bucket}")
+
+    recipe_error = None
+    try:
+        recipe_of = load_custom_foods(custom_foods_path)["by_food"]
+    except CustomFoodsError as e:
+        recipe_of, recipe_error = {}, e
+
+    stored = stored_mappings(db_path, mappings_path)
+    names = cached_food_names(db_path) | set(stored) | set(load_food_mappings(mappings_path)) | set(recipe_of)
+    if food not in names:
+        # Only here, as reading every export is slow: a food Gemini left
+        # untranslated, or one looked up without a key, is stored nowhere else.
+        names |= food_names_in_exports(sorted(glob.glob(os.path.join(EXPORTS_DIR, "*.xlsx"))))
+    if food not in names:
+        close = _close_names(food, names)
+        hint = " Did you mean: " + ", ".join(f'"{name}"' for name in close) + "?" if close else ""
+        print(f'Error: Unknown food "{food}".{hint}')
+        sys.exit(1)
+
+    old = stored.get(food)
+    if old == query:
+        print(f'"{food}" is already "{query}" — nothing changed.')
+        return
+    if food in recipe_of:
+        print(
+            f'Note: "{food}" is in the custom recipe "{recipe_of[food]}", which takes precedence: '
+            "the new lookup text has no effect while the recipe lists it."
+        )
+    elif recipe_error is not None:
+        print(f"Note: custom_foods.yaml is invalid ({recipe_error}), so it was not checked for a recipe.")
+
+    set_mapping(food, query, db_path, mappings_path)
+    print(f'"{food}": "{old}" → "{query}"' if old is not None else f'"{food}": "{query}" (set)')
+    if s3 is not None:
+        for label in _push_or_exit(*s3):
+            print(f"  {label}: uploaded")
+    print("Takes effect on the next analyze.")
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
@@ -338,6 +441,13 @@ def main() -> None:
         "--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})"
     )
 
+    update_parser = subparsers.add_parser("update-mapping", help="Set a food's USDA lookup text")
+    update_parser.add_argument("food", help="The food's name exactly as logged in MacroFactor")
+    update_parser.add_argument("query", help='The USDA lookup text, or "skip" to leave the food out')
+    update_parser.add_argument(
+        "--settings", default=None, help=f"Path to settings (default: {DEFAULT_SETTINGS})"
+    )
+
     args = parser.parse_args()
 
     if args.command == "analyze":
@@ -346,6 +456,8 @@ def main() -> None:
         cmd_pull(args)
     elif args.command == "push":
         cmd_push(args)
+    elif args.command == "update-mapping":
+        cmd_update_mapping(args)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import openpyxl
@@ -9,6 +10,7 @@ import yaml
 from omni_pilot.parser import (
     check_last_day,
     extract_unique_foods,
+    food_names_in_exports,
     generate_food_mappings,
     is_placeholder_weight,
     parse_daily_expenditure,
@@ -239,3 +241,20 @@ class TestCheckLastDay:
 
     def test_no_entries(self):
         assert check_last_day([], {}) is None
+
+
+def test_food_names_in_exports_unions_every_file(tmp_path):
+    a = write_food_log(tmp_path / "a.xlsx", [food_row("Apfel"), food_row("Haferflocken")])
+    b = write_food_log(tmp_path / "b.xlsx", [food_row("Haferflocken"), food_row("Milch")])
+
+    assert food_names_in_exports([a, b]) == {"Apfel", "Haferflocken", "Milch"}
+
+
+def test_food_names_in_exports_does_not_warn_about_quick_add(tmp_path, caplog):
+    path = write_food_log(tmp_path / "a.xlsx", [food_row("Quick Add"), food_row("Apfel")])
+
+    with caplog.at_level(logging.WARNING):
+        names = food_names_in_exports([path])
+
+    assert names == {"Apfel", "Quick Add"}
+    assert caplog.records == []
