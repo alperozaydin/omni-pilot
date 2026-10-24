@@ -198,8 +198,12 @@ def extract_unique_foods(entries: list[FoodEntry]) -> list[str]:
 def food_names_in_exports(paths: Iterable[str]) -> set[str]:
     """The unique food names logged in any of the given MacroFactor exports."""
     names: set[str] = set()
-    for path in paths:
-        names.update(extract_unique_foods(parse_food_log(path)))
+    logging.disable(logging.WARNING)  # the parser warns about every "Quick Add" row
+    try:
+        for path in paths:
+            names.update(extract_unique_foods(parse_food_log(path)))
+    finally:
+        logging.disable(logging.NOTSET)
     return names
 
 

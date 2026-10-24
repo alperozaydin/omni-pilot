@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import openpyxl
@@ -247,3 +248,13 @@ def test_food_names_in_exports_unions_every_file(tmp_path):
     b = write_food_log(tmp_path / "b.xlsx", [food_row("Haferflocken"), food_row("Milch")])
 
     assert food_names_in_exports([a, b]) == {"Apfel", "Haferflocken", "Milch"}
+
+
+def test_food_names_in_exports_does_not_warn_about_quick_add(tmp_path, caplog):
+    path = write_food_log(tmp_path / "a.xlsx", [food_row("Quick Add"), food_row("Apfel")])
+
+    with caplog.at_level(logging.WARNING):
+        names = food_names_in_exports([path])
+
+    assert names == {"Apfel", "Quick Add"}
+    assert caplog.records == []

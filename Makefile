@@ -2,6 +2,10 @@
 
 ICLOUD_DEST := $(HOME)/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/omni-pilot
 
+# A variable's text exactly as typed, single-quoted for the shell: $(value) keeps make from
+# expanding $ in it, and each ' becomes '"'"'. Food names can hold quotes, colons and $.
+shell_quote = '$(subst ','"'"',$(value $(1)))'
+
 help:
 	@echo "Available commands:"
 	@echo "  make analyze FILE=<path> - Analyze micronutrient intake (with HTML report)"
@@ -35,7 +39,7 @@ endif
 ifndef QUERY
 	$(error QUERY is not set. Usage: make update-mapping FOOD="Haferflocken" QUERY="cereals, oats, dry")
 endif
-	PYTHONPATH=src uv run python -m omni_pilot.cli update-mapping "$(FOOD)" "$(QUERY)"
+	PYTHONPATH=src uv run python -m omni_pilot.cli update-mapping $(call shell_quote,FOOD) $(call shell_quote,QUERY)
 
 test:
 	uv run pytest

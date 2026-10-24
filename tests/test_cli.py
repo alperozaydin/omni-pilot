@@ -1029,6 +1029,14 @@ class TestCLIUpdateMapping:
         assert self.db.read_bytes() == before
         assert not self.mappings.exists()
 
+    def test_short_name_in_wrong_case_is_suggested(self, mocker, tmp_path, capsys):
+        self.write_db(json.dumps({"_default": {}, "translations": {"1": {"german": "Brot", "english": "bread"}}}))
+
+        code = self.run(mocker, tmp_path, "BROT", "bread, whole-wheat")
+
+        assert code == 1
+        assert 'Did you mean: "Brot"' in capsys.readouterr().out
+
     @pytest.mark.parametrize("food, query", [("  ", "x"), ("Haferflocken", "   ")])
     def test_empty_food_or_query_exits_1(self, mocker, tmp_path, capsys, food, query):
         self.write_db()
@@ -1114,3 +1122,15 @@ def test_make_update_mapping_needs_food_and_query(args):
 
     assert done.returncode != 0
     assert "Usage: make update-mapping" in done.stderr
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make not installed")
+def test_make_update_mapping_hands_food_and_query_to_the_shell_unexpanded():
+    """Quotes and $ in a name would be mangled if make pasted the values into the command line."""
+    done = subprocess.run(
+        ["make", "-n", "update-mapping", 'FOOD=Müsli "Bio": Nuss', "QUERY=a $HOME b"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+
+    assert done.returncode == 0
+    assert """update-mapping 'Müsli "Bio": Nuss' 'a $HOME b'""" in done.stdout

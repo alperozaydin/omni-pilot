@@ -146,6 +146,17 @@ def _push_or_exit(client: S3Client, files: list[DataFile], state_file: str) -> l
         sys.exit(1)
 
 
+def _close_names(food: str, names: set[str]) -> list[str]:
+    """Up to three known names like `food`: the same name in another case first, then similar ones."""
+    by_folded: dict[str, list[str]] = {}
+    for name in sorted(names):
+        by_folded.setdefault(name.casefold(), []).append(name)
+    close = list(by_folded.get(food.casefold(), []))
+    for folded in difflib.get_close_matches(food.casefold(), by_folded, n=3):
+        close += [name for name in by_folded[folded] if name not in close]
+    return close[:3]
+
+
 def cmd_update_mapping(args: argparse.Namespace) -> None:
     """Set a food's USDA lookup text in the database and food_mappings.yaml, through S3 when configured."""
     food = args.food.strip()
@@ -188,7 +199,7 @@ def cmd_update_mapping(args: argparse.Namespace) -> None:
         # untranslated, or one looked up without a key, is stored nowhere else.
         names |= food_names_in_exports(sorted(glob.glob(os.path.join(EXPORTS_DIR, "*.xlsx"))))
     if food not in names:
-        close = difflib.get_close_matches(food, names, n=3)
+        close = _close_names(food, names)
         hint = " Did you mean: " + ", ".join(f'"{name}"' for name in close) + "?" if close else ""
         print(f'Error: Unknown food "{food}".{hint}')
         sys.exit(1)
