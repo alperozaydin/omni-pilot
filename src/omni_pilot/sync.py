@@ -15,6 +15,7 @@ from omni_pilot.parser import parse_food_log
 from omni_pilot.s3 import S3Client, S3Error
 
 EXPORTS_PREFIX = "exports/"
+EXPORTS_DIR = "data"  # where pull_exports puts the exports, and where the tools read them
 
 
 class DataFile(NamedTuple):
@@ -186,7 +187,7 @@ def upload_export(client: S3Client, path: str) -> tuple[str, bool] | None:
     return key, True
 
 
-def pull_exports(client: S3Client, exports_dir: str = "data") -> list[str]:
+def pull_exports(client: S3Client, exports_dir: str = EXPORTS_DIR) -> list[str]:
     """Download the exports S3 holds that exports_dir lacks. Returns the file names."""
     have = set(os.listdir(exports_dir)) if os.path.isdir(exports_dir) else set()
     pulled: list[str] = []

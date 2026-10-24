@@ -1,4 +1,4 @@
-.PHONY: help analyze pull push test lint lint-fix sync-iphone infra-diff infra-deploy
+.PHONY: help analyze pull push update-mapping test lint lint-fix sync-iphone infra-diff infra-deploy
 
 ICLOUD_DEST := $(HOME)/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/omni-pilot
 
@@ -7,6 +7,7 @@ help:
 	@echo "  make analyze FILE=<path> - Analyze micronutrient intake (with HTML report)"
 	@echo "  make pull                - Download data files and MacroFactor exports from S3"
 	@echo "  make push                - Upload changed data files to S3"
+	@echo "  make update-mapping FOOD=<name> QUERY=<text> - Set a food's USDA lookup text (\"skip\" excludes it)"
 	@echo "  make test                - Run tests with pytest"
 	@echo "  make lint                - Lint code with ruff"
 	@echo "  make lint-fix            - Lint and auto-fix issues with ruff"
@@ -26,6 +27,15 @@ pull:
 
 push:
 	PYTHONPATH=src uv run python -m omni_pilot.cli push
+
+update-mapping:
+ifndef FOOD
+	$(error FOOD is not set. Usage: make update-mapping FOOD="Haferflocken" QUERY="cereals, oats, dry")
+endif
+ifndef QUERY
+	$(error QUERY is not set. Usage: make update-mapping FOOD="Haferflocken" QUERY="cereals, oats, dry")
+endif
+	PYTHONPATH=src uv run python -m omni_pilot.cli update-mapping "$(FOOD)" "$(QUERY)"
 
 test:
 	uv run pytest
