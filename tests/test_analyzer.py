@@ -197,6 +197,37 @@ class TestAnalyzeSupplements:
         assert result["nutrients"]["vitamin_c_mg"]["daily_avg"] == 5.0
 
 
+class TestStatusOnShownValue:
+    """The reports show one decimal, so the status is judged on that figure."""
+
+    @staticmethod
+    def _vitamin_c(per_100g: float) -> dict:
+        entries = [{"date": "2026-08-09", "food_name": "Orange", "total_weight_g": 100}]
+        ref_ranges = {
+            "demographic": {},
+            "nutrients": {
+                "vitamin_c_mg": {
+                    "name": "Vitamin C", "unit": "mg", "type": "rda", "rda": 110, "ul": 2000,
+                }
+            },
+        }
+        result = analyze(entries, enrichment({"Orange": {"vitamin_c_mg": per_100g}}), ref_ranges)
+        return result["nutrients"]["vitamin_c_mg"]
+
+    def test_just_below_target_that_shows_as_target_is_ok(self):
+        # 109.96 is shown as 110.0, which meets the 110 target.
+        assert self._vitamin_c(109.96)["status"] == "ok"
+
+    def test_below_target_when_shown_is_still_low(self):
+        assert self._vitamin_c(109.94)["status"] == "low"
+
+    def test_just_above_ul_that_shows_as_ul_is_not_high(self):
+        assert self._vitamin_c(2000.04)["status"] == "ok"
+
+    def test_above_ul_when_shown_is_still_high(self):
+        assert self._vitamin_c(2000.06)["status"] == "high"
+
+
 class TestCoverageAccounting:
     def test_combined_nutrient_with_one_missing_component_contributes_nothing(self):
         entries = [{"date": "2026-08-09", "food_name": "Olives", "total_weight_g": 400.0}]

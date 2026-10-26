@@ -343,9 +343,10 @@ def analyze(
             round(100.0 * measured / attributable, 1) if attributable > 0 else None
         )
 
-        # Determine status
+        # Judged on the figure the reports show (one decimal), so 109.96 shown as
+        # 110.0 is not "low" against a target of 110.
         if target is not None:
-            status = determine_status(daily_avg, target, ul)
+            status = determine_status(round(daily_avg, 1), target, ul)
             pct = (daily_avg / target * 100) if target > 0 else None
         else:
             status = "unknown"
