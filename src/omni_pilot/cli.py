@@ -16,6 +16,7 @@ from tinydb import TinyDB
 
 from omni_pilot.analyzer import analyze
 from omni_pilot.config import (
+    ReferenceRangesError,
     S3ConfigError,
     load_food_mappings,
     load_reference_ranges,
@@ -233,7 +234,11 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     # Load config
     settings = load_settings(settings_path)
-    ref_ranges = load_reference_ranges(ref_ranges_path)
+    try:
+        ref_ranges = load_reference_ranges(ref_ranges_path)
+    except ReferenceRangesError as e:
+        print(f"Error in {ref_ranges_path}: {e}")
+        sys.exit(1)
     supplements = load_supplements(supplements_path)
 
     db_path = resolve_path("database_path", DEFAULT_DB, settings)

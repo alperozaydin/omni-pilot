@@ -16,6 +16,12 @@
 #          Intake): used when a recommendation cannot be derived
 #   ul   = Tolerable Upper Intake Level (max daily intake unlikely to cause harm)
 #   null = not established / not applicable
+#   ul_applies_to = what the ul is compared with (absent: the whole daily
+#          average, food plus supplements)
+#          supplements = the nutrient's amount in supplements.yaml alone; the
+#                        IOM UL covers only supplements (or synthetic forms)
+#          retinol     = retinol from food plus the supplement's amount; the
+#                        UL covers preformed vitamin A only
 #
 # Default values below are for: men aged 25 to under 51 (DGE's age group)
 # Adjust demographic section to match your profile.
@@ -36,6 +42,7 @@ nutrients:
     type: "rda"
     rda: 850  # retinol activity equivalent
     ul: 3000
+    ul_applies_to: retinol  # UL covers preformed vitamin A (retinol) only; a supplement counts as retinol
     source: "DGE"
 
   vitamin_c_mg:
@@ -60,6 +67,7 @@ nutrients:
     type: "ai"
     ai: 8  # RRR-alpha-tocopherol (NIH: 15)
     ul: 1000
+    ul_applies_to: supplements  # UL covers any form of supplemental alpha-tocopherol
     source: "DGE"
 
   vitamin_k_mcg:
@@ -92,6 +100,7 @@ nutrients:
     type: "rda"
     rda: 15  # niacin equivalents; USDA's preformed niacin can only understate
     ul: 35
+    ul_applies_to: supplements  # UL covers synthetic niacin: supplements and fortified foods
     source: "DGE"
 
   b5_pantothenic_acid_mg:
@@ -124,6 +133,7 @@ nutrients:
     type: "rda"
     rda: 300  # folate equivalents; food folate counts the same
     ul: 1000
+    ul_applies_to: supplements  # UL covers synthetic folic acid: supplements and fortified foods
     source: "DGE"
 
 # -----------------------------------------------------------------------------
@@ -158,7 +168,8 @@ nutrients:
     unit: "mg"
     type: "ai"
     ai: 350
-    ul: null           # UL of 350mg applies only to supplements, not food
+    ul: 350
+    ul_applies_to: supplements  # UL covers supplements (pharmacological agents) only, not food
     source: "DGE"
     note: "NIH's UL (350mg) applies to supplemental magnesium only, not dietary intake."
 

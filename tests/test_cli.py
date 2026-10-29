@@ -488,6 +488,22 @@ class TestCLIAnalyze:
         assert f"Error in {tmp_path / 'custom_foods.yaml'}: recipe 'caprese'" in capsys.readouterr().out
         mock_enrich.assert_not_called()
 
+    def test_analyze_invalid_reference_ranges_exits_1(self, mocker, tmp_path, capsys):
+        _, settings_path, ref_ranges_path = self._write_config(tmp_path, {})
+        with open(ref_ranges_path, "w") as f:
+            yaml.dump({"nutrients": {"b3_niacin_mg": {"ul": 35, "ul_applies_to": "food"}}}, f)
+        mock_enrich = mocker.patch("omni_pilot.cli.enrich_all_foods")
+
+        with pytest.raises(SystemExit) as exc_info:
+            self._run(mocker, settings_path, ref_ranges_path)
+
+        assert exc_info.value.code == 1
+        assert (
+            f"Error in {ref_ranges_path}: b3_niacin_mg: unknown ul_applies_to 'food'"
+            in capsys.readouterr().out
+        )
+        mock_enrich.assert_not_called()
+
     def test_custom_food_with_stale_cache_entry_is_not_rematched(self, mocker, tmp_path, capsys):
         db_path, settings_path, ref_ranges_path = self._write_config(tmp_path, {"Salat Caprese": "caprese salad"})
         (tmp_path / "custom_foods.yaml").write_text(CAPRESE_RECIPE)

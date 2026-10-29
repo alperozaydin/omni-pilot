@@ -7,6 +7,7 @@ import yaml
 
 from omni_pilot.config import (
     S3_ENV_VARS,
+    ReferenceRangesError,
     S3ConfigError,
     get_nutrient_target,
     load_food_mappings,
@@ -62,6 +63,44 @@ class TestLoadReferenceRanges:
     def test_raises_on_missing_file(self):
         with pytest.raises(FileNotFoundError):
             load_reference_ranges("/nonexistent/ref.yaml")
+
+    def test_ul_applies_to_accepts_supplements_and_retinol(self, tmp_path):
+        ref_file = tmp_path / "reference_ranges.yaml"
+        _write_yaml(str(ref_file), {"nutrients": {
+            "b3_niacin_mg": {"type": "rda", "rda": 15, "ul": 35, "ul_applies_to": "supplements"},
+            "vitamin_a_mcg": {"type": "rda", "rda": 850, "ul": 3000, "ul_applies_to": "retinol"},
+            "vitamin_c_mg": {"type": "rda", "rda": 110, "ul": 2000},
+        }})
+        ranges = load_reference_ranges(str(ref_file))
+        assert ranges["nutrients"]["b3_niacin_mg"]["ul_applies_to"] == "supplements"
+        assert ranges["nutrients"]["vitamin_a_mcg"]["ul_applies_to"] == "retinol"
+        assert "ul_applies_to" not in ranges["nutrients"]["vitamin_c_mg"]
+
+    def test_unknown_ul_applies_to_stops_loading_naming_the_nutrient(self, tmp_path):
+        ref_file = tmp_path / "reference_ranges.yaml"
+        _write_yaml(str(ref_file), {"nutrients": {
+            "b3_niacin_mg": {"type": "rda", "rda": 15, "ul": 35, "ul_applies_to": "food"},
+        }})
+        with pytest.raises(
+            ReferenceRangesError, match=r"b3_niacin_mg: unknown ul_applies_to 'food' \(use supplements or retinol\)",
+        ):
+            load_reference_ranges(str(ref_file))
+
+    def test_ul_applies_to_with_null_ul_loads(self, tmp_path):
+        ref_file = tmp_path / "reference_ranges.yaml"
+        _write_yaml(str(ref_file), {"nutrients": {
+            "magnesium_mg": {"type": "ai", "ai": 350, "ul": None, "ul_applies_to": "supplements"},
+        }})
+        ranges = load_reference_ranges(str(ref_file))
+        assert ranges["nutrients"]["magnesium_mg"]["ul_applies_to"] == "supplements"
+
+    def test_shipped_reference_ranges_mark_the_partial_upper_limits(self):
+        n = load_reference_ranges("config/reference_ranges.yaml")["nutrients"]
+        assert {k for k, v in n.items() if v.get("ul_applies_to") == "supplements"} == {
+            "b3_niacin_mg", "folate_mcg", "vitamin_e_mg", "magnesium_mg",
+        }
+        assert n["vitamin_a_mcg"]["ul_applies_to"] == "retinol"
+        assert n["magnesium_mg"]["ul"] == 350
 
 
 class TestLoadFoodMappings:
