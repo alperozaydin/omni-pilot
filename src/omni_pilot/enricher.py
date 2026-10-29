@@ -10,6 +10,8 @@ from typing import Literal, TypedDict
 
 import requests
 from tinydb import Query, TinyDB
+from tinydb.queries import QueryLike
+from tinydb.table import Table
 
 from omni_pilot import matcher
 from omni_pilot.custom_foods import CustomFoods, Recipe, no_custom_foods, recipe_macros
@@ -146,6 +148,9 @@ USDA_NUTRIENT_MAP: dict[str, str] = {
     "threonine_g": "502",         # Threonine
     "tryptophan_g": "501",        # Tryptophan
     "valine_g": "510",            # Valine
+    # Not a reference nutrient: only the analyzer reads it, to tell retinol (the
+    # part of vitamin A a vitamin A upper limit covers) from carotenoids.
+    "retinol_mcg": "319",         # Retinol
 }
 
 # Reverse map: USDA number -> our key
@@ -162,7 +167,9 @@ _SESSION = requests.Session()
 USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 USDA_FOOD_URL = "https://api.nal.usda.gov/fdc/v1/food/{fdc_id}"
 # Ingredients of custom foods, keyed by FDC ID. An ID always names the same
-# food, so entries here are never invalidated.
+# food, so entries here are never invalidated. The one change an entry can see is
+# a missing value being filled in (retinol, `fill_retinol`); the food it names
+# never changes.
 USDA_FOODS_TABLE = "usda_foods"
 
 
@@ -303,25 +310,31 @@ def _usda_macros(usda_food: dict) -> UsdaMacros:
     )
 
 
-def fetch_usda_food(fdc_id: int, api_key: str) -> dict | None:
-    """Fetch one USDA food by its FoodData Central ID.
+FetchMiss = Literal["gone", "rate_limited", "failed"]
+
+
+def fetch_usda_food_or_miss(fdc_id: int, api_key: str) -> dict | FetchMiss:
+    """Fetch one USDA food by its FoodData Central ID, or say why it could not be had.
 
     The abridged response names nutrients "number"/"amount"; they are
     converted to the search endpoint's "nutrientNumber"/"value" so the
-    search-hit helpers read the result unchanged. Returns None on any
-    failure; a 404 means the ID itself is wrong.
+    search-hit helpers read the result unchanged. A miss is "gone" (404: USDA
+    has no food with this ID), "rate_limited" (429 after `_usda_get`'s one
+    retry) or "failed" (any other error).
     """
     params = {"format": "abridged"}
     try:
         resp = _usda_get(USDA_FOOD_URL.format(fdc_id=fdc_id), params, api_key)
         if resp.status_code == 404:
-            logger.error("USDA has no food with FDC ID %s — check custom_foods.yaml", fdc_id)
-            return None
+            return "gone"
+        if resp.status_code == 429:
+            logger.error("USDA request for FDC ID %s hit the rate limit", fdc_id)
+            return "rate_limited"
         resp.raise_for_status()
         food = resp.json()
     except requests.RequestException as e:
         logger.error("USDA request failed for FDC ID %s: %s", fdc_id, e)
-        return None
+        return "failed"
     return {
         "fdcId": food.get("fdcId", fdc_id),
         "description": food.get("description", ""),
@@ -333,21 +346,70 @@ def fetch_usda_food(fdc_id: int, api_key: str) -> dict | None:
     }
 
 
+def fetch_usda_food(fdc_id: int, api_key: str) -> dict | None:
+    """Fetch one USDA food by ID; None on any failure (a 404 means the ID itself is wrong)."""
+    food = fetch_usda_food_or_miss(fdc_id, api_key)
+    if food == "gone":
+        logger.error("USDA has no food with FDC ID %s — check custom_foods.yaml", fdc_id)
+    return food if isinstance(food, dict) else None
+
+
+RETINOL_KEY = "retinol_mcg"
+
+
+def fill_retinol(
+    table: Table | TinyDB,
+    cond: QueryLike,
+    per_100g: dict,
+    fdc_id: int | None,
+    api_key: str,
+    label: str,
+) -> tuple[dict, FetchMiss | None]:
+    """Add retinol to a cached profile written before it was stored.
+
+    A profile without the `retinol_mcg` key (not one with a None value, which
+    says USDA has no figure) is extended from the food's USDA ID, without
+    re-matching, and written back to the entries `cond` selects in `table`:
+    only `per_100g`, since `upsert` merges top-level fields only. A 404 stores
+    None, so a gone ID is not fetched again every run; any other miss writes
+    nothing, leaving the key absent for the next run. Returns the profile to use
+    and the miss, if any. An entry without a USDA ID is left as it is.
+    """
+    if RETINOL_KEY in per_100g or fdc_id is None:
+        return per_100g, None
+    raw = fetch_usda_food_or_miss(fdc_id, api_key)
+    if raw == "gone":
+        logger.warning("Retinol for '%s' not filled: its USDA ID %s no longer exists", label, fdc_id)
+        retinol = None
+    elif isinstance(raw, dict):
+        retinol = extract_micros_from_usda(raw)[RETINOL_KEY]
+    else:
+        logger.warning("Retinol for '%s' not filled (USDA lookup %s); retrying next run", label, raw)
+        return per_100g, raw
+    extended = {**per_100g, RETINOL_KEY: retinol}
+    table.update({"per_100g": extended}, cond)
+    return extended, ("gone" if raw == "gone" else None)
+
+
 def get_usda_food(fdc_id: int, db: TinyDB, api_key: str) -> UsdaFood | None:
     """Get a USDA food by ID from the usda_foods cache, fetching it on a miss.
 
-    A cached entry is always reused. A failed fetch caches nothing, so it is
+    A cached entry is always reused; one written before retinol was stored gets
+    it filled in (`fill_retinol`). A failed fetch caches nothing, so it is
     retried on the next run.
     """
     table = db.table(USDA_FOODS_TABLE)
     cached = table.search(Query().fdc_id == fdc_id)
     if cached:
         entry = cached[0]
+        per_100g, _ = fill_retinol(
+            table, Query().fdc_id == fdc_id, entry["per_100g"], fdc_id, api_key, f"FDC {fdc_id}"
+        )
         return UsdaFood(
             fdc_id=entry["fdc_id"],
             usda_name=entry["usda_name"],
             usda_dataset=entry["usda_dataset"],
-            per_100g=entry["per_100g"],
+            per_100g=per_100g,
             usda_macros=entry["usda_macros"],
         )
 
@@ -392,6 +454,21 @@ def _match_from_entry(entry: dict, confidence: str | None = None) -> FoodMatch:
         macro_distance=entry.get("macro_distance"),
         usda_macros=entry.get("usda_macros"),
     )
+
+
+def _with_retinol(
+    entry: dict, db: TinyDB, food_name: str, api_key: str, confidence: str | None = None
+) -> FoodMatch:
+    """The cached match, with retinol filled into an entry written without it.
+
+    A failed fill leaves the entry as it was: the food is still used, with its
+    retinol counted as zero for the run.
+    """
+    per_100g, _ = fill_retinol(
+        db, Query().original_name == food_name, entry["per_100g"],
+        entry.get("usda_fdc_id"), api_key, food_name,
+    )
+    return _match_from_entry({**entry, "per_100g": per_100g}, confidence)
 
 
 def _matched_by(totals: LoggedTotals | None) -> str:
@@ -447,7 +524,7 @@ def get_food_match(
                 if _is_fresh_not_found(entry):
                     return "not_in_usda"
             elif _is_current(entry) and _made_the_same_way(entry, totals):
-                return _match_from_entry(entry)
+                return _with_retinol(entry, db, food_name, api_key)
             stale_entry = entry
         else:
             # Mapping changed: the old entry describes a different query
@@ -459,7 +536,7 @@ def get_food_match(
     if pick is None:
         if stale_entry is not None and not stale_entry.get("not_found"):
             logger.warning("Re-matching '%s' failed; keeping its previous USDA match", food_name)
-            return _match_from_entry(stale_entry, confidence="unverified")
+            return _with_retinol(stale_entry, db, food_name, api_key, confidence="unverified")
         if not complete:
             # USDA could not be asked; an expired not-found record is still its last answer
             return "not_in_usda" if stale_entry is not None else "lookup_failed"
