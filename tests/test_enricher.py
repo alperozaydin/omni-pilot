@@ -12,6 +12,7 @@ from omni_pilot.enricher import (
     NOT_FOUND_TTL_DAYS,
     SEARCH_PAGE_SIZE,
     USDA_NUTRIENT_MAP,
+    backfill_retinol,
     clean_query,
     count_outdated_matches,
     enrich_all_foods,
@@ -1318,3 +1319,98 @@ class TestFillRetinol:
 
         assert (result, miss) == (per_100g, "rate_limited")
         assert "Rinderleber" in caplog.text
+
+
+class TestBackfillRetinol:
+    @staticmethod
+    def _hit(retinol: float | None = 10.0) -> dict:
+        nutrients = [{"nutrientNumber": "319", "value": retinol}] if retinol is not None else []
+        return {"fdcId": 1, "description": "x", "dataType": "SR Legacy", "foodNutrients": nutrients}
+
+    @staticmethod
+    def _db(tmp_path, main=(), foods=()) -> TinyDB:
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        for name, fdc_id, per_100g in main:
+            db.insert({"original_name": name, "usda_fdc_id": fdc_id, "per_100g": per_100g, "reviewed_fdc_id": fdc_id})
+        for fdc_id, per_100g in foods:
+            db.table("usda_foods").insert({"fdc_id": fdc_id, "usda_name": "n", "per_100g": per_100g})
+        return db
+
+    def test_fills_both_tables_and_fetches_a_shared_id_once(self, mocker, tmp_path):
+        db = self._db(
+            tmp_path,
+            main=[("Rinderleber", 171140, {"iron_mg": 1.0})],
+            foods=[(171140, {"iron_mg": 1.0}), (170457, {"iron_mg": 2.0})],
+        )
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value=self._hit(10.0))
+
+        report = backfill_retinol(db, "k")
+
+        assert fetch.call_count == 2
+        assert report == {"filled": 3, "no_usda_id": [], "failed": [], "gone": [], "rate_limited": False}
+        main = db.search(Query().original_name == "Rinderleber")[0]
+        assert main["per_100g"] == {"iron_mg": 1.0, "retinol_mcg": 10.0}
+        assert main["reviewed_fdc_id"] == 171140
+        for entry in db.table("usda_foods").all():
+            assert entry["per_100g"]["retinol_mcg"] == 10.0
+
+    def test_skips_not_found_records_and_names_entries_without_id(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[("Ohne ID", None, {"iron_mg": 1.0})])
+        db.insert({"original_name": "Nirgends", "usda_query": "q", "not_found": True})
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss")
+
+        report = backfill_retinol(db, "k")
+
+        fetch.assert_not_called()
+        assert report == {"filled": 0, "no_usda_id": ["Ohne ID"], "failed": [], "gone": [], "rate_limited": False}
+        assert "per_100g" not in db.search(Query().original_name == "Nirgends")[0]
+
+    def test_entries_with_the_key_are_left_alone(self, mocker, tmp_path):
+        db = self._db(
+            tmp_path,
+            main=[("Eier", 1, {"retinol_mcg": None})],
+            foods=[(2, {"retinol_mcg": 5.0})],
+        )
+        db.close()
+        path = tmp_path / "test_db.json"
+        before = path.read_bytes()
+        db = TinyDB(str(path))
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss")
+
+        report = backfill_retinol(db, "k")
+        db.close()
+
+        fetch.assert_not_called()
+        assert report["filled"] == 0
+        assert path.read_bytes() == before
+
+    def test_stops_fetching_after_rate_limit_but_keeps_what_it_filled(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[("A", 1, {}), ("B", 2, {}), ("C", 3, {})])
+        fetch = mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            side_effect=[self._hit(1.0), "rate_limited", self._hit(3.0)],
+        )
+
+        report = backfill_retinol(db, "k")
+
+        assert fetch.call_count == 2
+        assert report["filled"] == 1
+        assert report["rate_limited"] is True
+        assert report["failed"] == []
+        assert db.search(Query().original_name == "A")[0]["per_100g"] == {"retinol_mcg": 1.0}
+        assert db.search(Query().original_name == "C")[0]["per_100g"] == {}
+
+    def test_failed_and_gone_are_reported(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[("Kaputt", 1, {}), ("Weg", 2, {})], foods=[(3, {})])
+        mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss", side_effect=["failed", "gone", self._hit(None)]
+        )
+
+        report = backfill_retinol(db, "k")
+
+        assert report == {
+            "filled": 1, "no_usda_id": [], "failed": ["Kaputt"], "gone": ["Weg"], "rate_limited": False,
+        }
+        assert "retinol_mcg" not in db.search(Query().original_name == "Kaputt")[0]["per_100g"]
+        assert db.search(Query().original_name == "Weg")[0]["per_100g"] == {"retinol_mcg": None}
+        assert db.table("usda_foods").all()[0]["per_100g"] == {"retinol_mcg": None}

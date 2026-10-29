@@ -378,6 +378,22 @@ def fill_retinol(
     if RETINOL_KEY in per_100g or fdc_id is None:
         return per_100g, None
     raw = fetch_usda_food_or_miss(fdc_id, api_key)
+    return _write_retinol(table, cond, per_100g, fdc_id, raw, label)
+
+
+def _write_retinol(
+    table: Table | TinyDB,
+    cond: QueryLike,
+    per_100g: dict,
+    fdc_id: int,
+    raw: dict | FetchMiss,
+    label: str,
+) -> tuple[dict, FetchMiss | None]:
+    """Write the outcome of a retinol fetch back: the one place that rule lives.
+
+    `raw` is what `fetch_usda_food_or_miss` returned for `fdc_id`. A food stores
+    its retinol, a "gone" ID stores None, any other miss writes nothing.
+    """
     if raw == "gone":
         logger.warning("Retinol for '%s' not filled: its USDA ID %s no longer exists", label, fdc_id)
         retinol = None
@@ -389,6 +405,60 @@ def fill_retinol(
     extended = {**per_100g, RETINOL_KEY: retinol}
     table.update({"per_100g": extended}, cond)
     return extended, ("gone" if raw == "gone" else None)
+
+
+class BackfillReport(TypedDict):
+    filled: int
+    no_usda_id: list[str]
+    failed: list[str]
+    gone: list[str]
+    rate_limited: bool
+
+
+def backfill_retinol(db: TinyDB, api_key: str) -> BackfillReport:
+    """Fill retinol into every cached profile that lacks it, fetching each USDA ID once.
+
+    Covers the matches of the main table (not-found records have no profile and
+    are skipped) and then the `usda_foods` entries. An ID shared by several
+    entries is fetched once and written to each. After a rate-limit answer
+    nothing more is fetched; what was filled stays written.
+    """
+    report = BackfillReport(filled=0, no_usda_id=[], failed=[], gone=[], rate_limited=False)
+    fetched: dict[int, dict | FetchMiss] = {}
+    sources: list[tuple[Table | TinyDB, list[dict]]] = [
+        (db, db.all()),
+        (db.table(USDA_FOODS_TABLE), db.table(USDA_FOODS_TABLE).all()),
+    ]
+    for table, entries in sources:
+        for entry in entries:
+            per_100g = entry.get("per_100g")
+            if not isinstance(per_100g, dict) or RETINOL_KEY in per_100g:
+                continue
+            if table is db:
+                label, fdc_id = entry["original_name"], entry.get("usda_fdc_id")
+                cond = Query().original_name == label
+            else:
+                label, fdc_id = f"FDC {entry['fdc_id']}", entry["fdc_id"]
+                cond = Query().fdc_id == fdc_id
+            if fdc_id is None:
+                report["no_usda_id"].append(label)
+                continue
+            if fdc_id not in fetched:
+                if report["rate_limited"]:
+                    continue
+                fetched[fdc_id] = fetch_usda_food_or_miss(fdc_id, api_key)
+            raw = fetched[fdc_id]
+            if raw == "rate_limited":
+                report["rate_limited"] = True
+                continue
+            _, miss = _write_retinol(table, cond, per_100g, fdc_id, raw, label)
+            if miss == "gone":
+                report["gone"].append(label)
+            elif miss is not None:
+                report["failed"].append(label)
+            else:
+                report["filled"] += 1
+    return report
 
 
 def get_usda_food(fdc_id: int, db: TinyDB, api_key: str) -> UsdaFood | None:

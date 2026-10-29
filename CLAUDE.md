@@ -24,6 +24,9 @@ make push    # cli push; `push --export FILE` uploads an export first
 # Set a food's USDA lookup text (or skip) in the database and food_mappings.yaml, through S3
 make update-mapping FOOD="Haferflocken" QUERY="cereals, oats, dry"   # cli update-mapping FOOD QUERY
 
+# One-time: fill retinol (retinol_mcg) for every cached food and recipe ingredient, pulling from and pushing to S3
+PYTHONPATH=src uv run python scripts/backfill_retinol.py   # safe to repeat; needs the USDA key; stops and says so if USDA refuses (rate limit)
+
 # Run tests
 make test
 # or
