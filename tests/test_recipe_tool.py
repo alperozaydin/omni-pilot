@@ -14,6 +14,7 @@ import pytest
 import yaml
 from tinydb import TinyDB
 
+from omni_pilot.enricher import USDA_FOODS_TABLE, USDA_NUTRIENT_MAP
 from omni_pilot.translator import set_mapping
 
 INSTALLED_TOOL = (
@@ -640,3 +641,36 @@ class TestPlaceholderWeights:
         assert ("    logged   : 1192 kcal, P 66.0, F 52.0, C 114.0 over 1 serving with a placeholder weight"
                 in out)
         assert "    USDA pick: Chicken breast tenders, breaded (off 19%) → fitted 456 g" in out
+
+
+class TestNutrientCount:
+    """Retinol is stored for vitamin A's upper limit only: never counted or listed as missing."""
+
+    def test_food_leaves_retinol_out_of_count_and_missing_list(self, ws, run):
+        per_100g = {key: 1.0 for key in USDA_NUTRIENT_MAP}
+        per_100g.update(retinol_mcg=None, tryptophan_g=None)
+        ws.db_path.parent.mkdir(exist_ok=True)
+        with TinyDB(ws.db_path) as db:
+            db.table(USDA_FOODS_TABLE).insert({
+                "fdc_id": 168462, "usda_name": "Arugula, raw", "usda_dataset": "SR Legacy",
+                "per_100g": per_100g,
+                "usda_macros": {"protein_g": 2.6, "fat_g": 0.7, "carbs_g": 3.7, "fiber_g": 1.6},
+            })
+
+        code, out = run("food", "168462")
+
+        assert code == 0
+        assert "37/38 nutrients" in out
+        assert "lacks: tryptophan_g\n" in out
+        assert "retinol" not in out
+
+    def test_search_counts_without_retinol(self, ws, tool, run, monkeypatch):
+        hit = {"fdcId": 175167, "description": "Beef, variety meats and by-products, liver, raw",
+               "dataType": "SR Legacy",
+               "foodNutrients": [{"nutrientNumber": number, "value": 1.0} for number in USDA_NUTRIENT_MAP.values()]}
+        monkeypatch.setattr(tool, "search_usda", lambda query, key: [hit])
+
+        code, out = run("search", "beef liver")
+
+        assert code == 0
+        assert "38/38" in out

@@ -3,9 +3,10 @@
   "skills": {
     "omni-pilot-custom-foods": {
       "source": "alperozaydin/my-skills",
+      "ref": "alozay/bar-98-retinol-not-counted",
       "sourceType": "github",
       "skillPath": "skills/omni-pilot-custom-foods/SKILL.md",
-      "computedHash": "2d9316acac78f0f9303c2c01967a31fdcebc23752228cd376b8c5d0821538f34"
+      "computedHash": "902ecab2c305932539c8fd71ce46fede5f3c46f9e160d9dad312691dba6976e9"
     },
     "omni-pilot-daily-review": {
       "source": "alperozaydin/my-skills",
