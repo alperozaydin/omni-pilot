@@ -38,6 +38,7 @@ from omni_pilot.cli import DEFAULT_CUSTOM_FOODS, DEFAULT_DB, DEFAULT_MAPPINGS, D
 from omni_pilot.config import load_food_mappings, load_settings, resolve_path
 from omni_pilot.custom_foods import CustomFoodsError, load_custom_foods, recipe_macros
 from omni_pilot.enricher import (
+    RETINOL_KEY,
     USDA_FOODS_TABLE,
     USDA_NUTRIENT_MAP,
     _nutrient_value,
@@ -59,7 +60,10 @@ from omni_pilot.matcher import (
 )
 from omni_pilot.parser import parse_food_log
 
-N_NUTRIENTS = len(USDA_NUTRIENT_MAP)
+# Retinol is stored only for vitamin A's upper limit: it is no reference nutrient and takes
+# no part in coverage, so it is not counted or listed as missing.
+COUNTED_NUTRIENTS = {key: number for key, number in USDA_NUTRIENT_MAP.items() if key != RETINOL_KEY}
+N_NUTRIENTS = len(COUNTED_NUTRIENTS)
 REVIEWED = "reviewed_fdc_id"  # the USDA ID a reviewer judged to be the logged food
 DEFERRED_FDC = "deferred_fdc_id"  # the match the daily review left for the user
 DEFERRED_QUERY = "deferred_query"  # the lookup text of a not-found record it left for the user
@@ -203,7 +207,7 @@ def _ingredient(fdc_id: int, db: TinyDB | None, api_key: str) -> dict | None:
 
 
 def _missing(food: dict) -> list[str]:
-    return [key for key, value in food["per_100g"].items() if value is None]
+    return [key for key, value in food["per_100g"].items() if value is None and key in COUNTED_NUTRIENTS]
 
 
 def cmd_flagged(args: argparse.Namespace) -> None:
@@ -413,7 +417,7 @@ def cmd_search(args: argparse.Namespace) -> None:
     for hit in hits[: args.limit]:
         m = {k: _nutrient_value(hit, n) for k, n in
              (("protein_g", "203"), ("fat_g", "204"), ("carbs_g", "205"), ("fiber_g", "291"))}
-        have = sum(_nutrient_value(hit, n) is not None for n in USDA_NUTRIENT_MAP.values())
+        have = sum(_nutrient_value(hit, n) is not None for n in COUNTED_NUTRIENTS.values())
         print(f"{hit['fdcId']:>8}  {hit.get('dataType', ''):<11} {have:>2}/{N_NUTRIENTS}  "
               f"{_fmt_macros(m):<34} {hit['description']}")
 

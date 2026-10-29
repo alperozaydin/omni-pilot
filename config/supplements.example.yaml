@@ -9,4 +9,8 @@
 # omega3_epa_dha_mg: 1000.0
 
 # --- Vitamins ---
-# vitamin_a_mcg: 0.0
+# vitamin_a_mcg: 0.0   # counts as retinol for the upper limit
+# vitamin_e_mg: 0.0    # mg of alpha-tocopherol on the label; the upper limit covers any supplemental form
+# folate_mcg: 0.0      # folic acid as an EU label states it (ug folic acid), not a US label's DFE figure.
+#                      # The upper limit is in folic acid; the target is in folate equivalents, so the
+#                      # target check undercounts a folic acid supplement.

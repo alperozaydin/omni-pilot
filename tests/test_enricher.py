@@ -4,24 +4,27 @@ from datetime import date, timedelta
 
 import pytest
 import requests
-from tinydb import TinyDB
+from tinydb import Query, TinyDB
 
+from omni_pilot.custom_foods import recipe_macros
 from omni_pilot.enricher import (
     MATCH_VERSION,
     NOT_FOUND_TTL_DAYS,
     SEARCH_PAGE_SIZE,
     USDA_NUTRIENT_MAP,
+    backfill_retinol,
     clean_query,
     count_outdated_matches,
     enrich_all_foods,
     extract_micros_from_usda,
     fetch_usda_food,
+    fetch_usda_food_or_miss,
+    fill_retinol,
     get_food_candidates,
     get_food_match,
     get_usda_food,
     search_usda,
 )
-from omni_pilot.custom_foods import recipe_macros
 from omni_pilot.matcher import GOOD_DISTANCE, LoggedTotals, fitted_distance
 
 
@@ -34,7 +37,9 @@ def _usda_hit(
     *,
     data_type: str = "SR Legacy",
     vitamin_a: float = 149.0,
+    nutrients: dict[str, float] | None = None,
 ) -> dict:
+    """A USDA search hit; `nutrients` adds {USDA nutrient number: value} entries."""
     return {
         "fdcId": fdc_id,
         "description": description,
@@ -44,6 +49,7 @@ def _usda_hit(
             {"nutrientNumber": "204", "value": fat},
             {"nutrientNumber": "205", "value": carbs},
             {"nutrientNumber": "320", "value": vitamin_a},
+            *({"nutrientNumber": number, "value": value} for number, value in (nutrients or {}).items()),
         ],
     }
 
@@ -121,6 +127,37 @@ class TestFetchUsdaFood:
 
         assert fetch_usda_food(170457, "fake-key")["fdcId"] == 170457
         assert mock_get.call_count == 2
+
+
+class TestFetchUsdaFoodOrMiss:
+    def test_returns_the_food_on_success(self, mocker):
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = ABRIDGED_TOMATO
+        assert fetch_usda_food_or_miss(170457, "fake-key")["fdcId"] == 170457
+
+    def test_404_is_gone(self, mocker, caplog):
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
+        mock_get.return_value.status_code = 404
+        assert fetch_usda_food_or_miss(999999999, "fake-key") == "gone"
+        # The advice about recipes belongs to the fetch_usda_food wrapper
+        assert "custom_foods.yaml" not in caplog.text
+
+    def test_429_after_retry_is_rate_limited(self, mocker):
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
+        mock_get.return_value.status_code = 429
+        mock_get.return_value.raise_for_status.side_effect = requests.HTTPError("429")
+        mocker.patch("omni_pilot.enricher.time.sleep")
+        assert fetch_usda_food_or_miss(170457, "fake-key") == "rate_limited"
+        assert mock_get.call_count == 2
+
+    def test_500_and_connection_error_are_failed(self, mocker):
+        mock_get = mocker.patch("omni_pilot.enricher._SESSION.get")
+        mock_get.return_value.status_code = 500
+        mock_get.return_value.raise_for_status.side_effect = requests.HTTPError("500")
+        assert fetch_usda_food_or_miss(170457, "fake-key") == "failed"
+        mock_get.side_effect = requests.ConnectionError("offline")
+        assert fetch_usda_food_or_miss(170457, "fake-key") == "failed"
 
 
 class TestGetUsdaFood:
@@ -278,6 +315,9 @@ class TestGetFoodCandidates:
 
 
 class TestUsdaNutrientMap:
+    def test_stores_retinol(self):
+        assert USDA_NUTRIENT_MAP["retinol_mcg"] == "319"
+
     def test_has_all_vitamin_keys(self):
         expected_keys = [
             "vitamin_a_mcg", "vitamin_c_mg", "vitamin_d_mcg", "vitamin_e_mg",
@@ -1086,3 +1126,345 @@ class TestPlaceholderMatching:
         assert match["macro_distance"] == pytest.approx(
             fitted_distance(totals, result["matched_macros"]["Salat Caprese"])
         )
+
+
+class TestRetinolBackfill:
+    """Cache entries written before retinol was stored get it by their USDA ID."""
+
+    LIVER_QUERY = "beef, liver, raw"
+
+    def _entry(self, **extra) -> dict:
+        return {
+            "original_name": "Rinderleber",
+            "usda_query": self.LIVER_QUERY,
+            "usda_name": "Beef, variety meats and by-products, liver, raw",
+            "usda_fdc_id": 171140,
+            "usda_dataset": "SR Legacy",
+            "per_100g": {"vitamin_a_mcg": 4968.0, "iron_mg": 4.9},
+            "confidence": "good",
+            "macro_distance": 0.02,
+            "usda_macros": {"protein_g": 20.4, "fat_g": 3.6, "carbs_g": 3.9, "fiber_g": None},
+            "matched_by": "per_100g",
+            "match_version": MATCH_VERSION,
+            "last_updated": "2026-10-01",
+            "reviewed_fdc_id": 171140,
+            "deferred_reason": "impossible",
+            **extra,
+        }
+
+    LIVER_LOGGED = {"kcal": 135.0, "protein_g": 20.4, "fat_g": 3.6, "carbs_g": 3.9}
+
+    def test_reused_match_without_retinol_is_filled_by_usda_id(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry())
+        before = db.all()[0]
+        fetch = mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            return_value=_usda_hit(171140, "Beef liver", nutrients={"319": 4968.0}),
+        )
+        mock_candidates = mocker.patch("omni_pilot.enricher.get_food_candidates")
+
+        match = get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+
+        fetch.assert_called_once_with(171140, "k")
+        mock_candidates.assert_not_called()
+        assert match["per_100g"]["retinol_mcg"] == 4968.0
+        assert match["per_100g"]["iron_mg"] == 4.9
+        [entry] = db.all()
+        assert entry["per_100g"]["retinol_mcg"] == 4968.0
+        # Only per_100g changed: the match, its stamp and the marks the app does not write stay
+        assert {k: v for k, v in entry.items() if k != "per_100g"} == {
+            k: v for k, v in before.items() if k != "per_100g"
+        }
+        assert {k: v for k, v in entry["per_100g"].items() if k != "retinol_mcg"} == before["per_100g"]
+
+    def test_failed_fill_writes_nothing_and_the_food_is_still_used(self, mocker, tmp_path, caplog):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry())
+        mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value="failed")
+
+        match = get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+
+        assert match != "lookup_failed"
+        assert "retinol_mcg" not in match["per_100g"]
+        assert db.all() == [self._entry()]
+        assert "Rinderleber" in caplog.text
+
+    def test_rate_limited_fill_writes_nothing(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry())
+        mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value="rate_limited")
+
+        match = get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+
+        assert "retinol_mcg" not in match["per_100g"]
+        assert db.all() == [self._entry()]
+
+    def test_gone_id_stores_none_and_is_not_fetched_again(self, mocker, tmp_path, caplog):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry())
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value="gone")
+
+        match = get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+
+        assert match["per_100g"]["retinol_mcg"] is None
+        assert db.all()[0]["per_100g"]["retinol_mcg"] is None
+        assert "no longer exists" in caplog.text
+        assert "Rinderleber" in caplog.text
+        get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+        fetch.assert_called_once()
+
+    def test_entry_with_retinol_key_even_none_is_not_fetched(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry(per_100g={"vitamin_a_mcg": 1.0, "retinol_mcg": None}))
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss")
+
+        match = get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+
+        fetch.assert_not_called()
+        assert match["per_100g"]["retinol_mcg"] is None
+
+    def test_entry_without_usda_id_is_not_backfilled(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        entry = self._entry()
+        del entry["usda_fdc_id"]
+        db.insert(entry)
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss")
+
+        match = get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+
+        fetch.assert_not_called()
+        assert "retinol_mcg" not in match["per_100g"]
+
+    def test_unverified_fallback_is_filled_too(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        db.insert(self._entry(match_version=0))
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([], False))
+        mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            return_value=_usda_hit(171140, "Beef liver", nutrients={"319": 4968.0}),
+        )
+
+        match = get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+
+        assert match["confidence"] == "unverified"
+        assert match["per_100g"]["retinol_mcg"] == 4968.0
+        assert db.all()[0]["per_100g"]["retinol_mcg"] == 4968.0
+        assert db.all()[0]["match_version"] == 0
+
+    def test_cached_ingredient_without_retinol_is_filled(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        table = db.table("usda_foods")
+        table.insert({
+            "fdc_id": 171140, "usda_name": "Beef liver", "usda_dataset": "SR Legacy",
+            "per_100g": {"vitamin_a_mcg": 4968.0},
+            "usda_macros": {"protein_g": 20.4, "fat_g": 3.6, "carbs_g": 3.9, "fiber_g": None},
+            "last_updated": "2026-10-01",
+        })
+        fetch = mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            return_value=_usda_hit(171140, "Beef liver", nutrients={"319": 4968.0}),
+        )
+
+        food = get_usda_food(171140, db, "k")
+        again = get_usda_food(171140, db, "k")
+
+        fetch.assert_called_once_with(171140, "k")
+        assert food["per_100g"]["retinol_mcg"] == 4968.0
+        assert again["per_100g"]["retinol_mcg"] == 4968.0
+        [entry] = table.all()
+        assert entry["per_100g"]["retinol_mcg"] == 4968.0
+        assert entry["last_updated"] == "2026-10-01"
+        assert db.all() == []
+
+    def test_new_match_stores_retinol(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        candidate = _candidate(171140, "Beef, liver, raw", 20.4, 3.6, 3.9)
+        candidate["raw"] = _usda_hit(171140, "Beef, liver, raw", 20.4, 3.6, 3.9, nutrients={"319": 4968.0})
+        mocker.patch("omni_pilot.enricher.get_food_candidates", return_value=([candidate], True))
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss")
+
+        match = get_food_match("Rinderleber", self.LIVER_QUERY, self.LIVER_LOGGED, db, "k")
+
+        fetch.assert_not_called()
+        assert match["per_100g"]["retinol_mcg"] == 4968.0
+        assert db.all()[0]["per_100g"]["retinol_mcg"] == 4968.0
+
+    def test_new_ingredient_stores_retinol(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food",
+            return_value=_usda_hit(171140, "Beef liver", nutrients={"319": 4968.0}),
+        )
+        assert get_usda_food(171140, db, "k")["per_100g"]["retinol_mcg"] == 4968.0
+        assert db.table("usda_foods").all()[0]["per_100g"]["retinol_mcg"] == 4968.0
+
+
+class TestFillRetinol:
+    def test_does_not_fetch_when_the_key_is_present_or_the_id_missing(self, mocker, tmp_path):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss")
+        has_key = {"retinol_mcg": None}
+        assert fill_retinol(db, Query().x == 1, has_key, 1, "k", "Food") == (has_key, None)
+        no_key = {"iron_mg": 1.0}
+        assert fill_retinol(db, Query().x == 1, no_key, None, "k", "Food") == (no_key, None)
+        fetch.assert_not_called()
+
+    def test_miss_is_returned_and_logged_with_the_label(self, mocker, tmp_path, caplog):
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value="rate_limited")
+        per_100g = {"iron_mg": 1.0}
+
+        result, miss = fill_retinol(db, Query().x == 1, per_100g, 1, "k", "Rinderleber")
+
+        assert (result, miss) == (per_100g, "rate_limited")
+        assert "Rinderleber" in caplog.text
+
+
+class TestBackfillRetinol:
+    @staticmethod
+    def _hit(retinol: float | None = 10.0) -> dict:
+        nutrients = [{"nutrientNumber": "319", "value": retinol}] if retinol is not None else []
+        return {"fdcId": 1, "description": "x", "dataType": "SR Legacy", "foodNutrients": nutrients}
+
+    @staticmethod
+    def _db(tmp_path, main=(), foods=()) -> TinyDB:
+        db = TinyDB(str(tmp_path / "test_db.json"))
+        for name, fdc_id, per_100g in main:
+            db.insert({"original_name": name, "usda_fdc_id": fdc_id, "per_100g": per_100g, "reviewed_fdc_id": fdc_id})
+        for fdc_id, per_100g in foods:
+            db.table("usda_foods").insert({"fdc_id": fdc_id, "usda_name": "n", "per_100g": per_100g})
+        return db
+
+    def test_fills_both_tables_and_fetches_a_shared_id_once(self, mocker, tmp_path):
+        db = self._db(
+            tmp_path,
+            main=[("Rinderleber", 171140, {"iron_mg": 1.0})],
+            foods=[(171140, {"iron_mg": 1.0}), (170457, {"iron_mg": 2.0})],
+        )
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value=self._hit(10.0))
+
+        report = backfill_retinol(db, "k")
+
+        assert fetch.call_count == 2
+        assert report == {
+            "filled": 3, "no_usda_id": [], "failed": [], "gone": [], "rate_limited": False,
+            "stopped_after_failures": False,
+        }
+        main = db.search(Query().original_name == "Rinderleber")[0]
+        assert main["per_100g"] == {"iron_mg": 1.0, "retinol_mcg": 10.0}
+        assert main["reviewed_fdc_id"] == 171140
+        for entry in db.table("usda_foods").all():
+            assert entry["per_100g"]["retinol_mcg"] == 10.0
+
+    def test_skips_not_found_records_and_names_entries_without_id(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[("Ohne ID", None, {"iron_mg": 1.0})])
+        db.insert({"original_name": "Nirgends", "usda_query": "q", "not_found": True})
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss")
+
+        report = backfill_retinol(db, "k")
+
+        fetch.assert_not_called()
+        assert report == {
+            "filled": 0, "no_usda_id": ["Ohne ID"], "failed": [], "gone": [], "rate_limited": False,
+            "stopped_after_failures": False,
+        }
+        assert "per_100g" not in db.search(Query().original_name == "Nirgends")[0]
+
+    def test_entries_with_the_key_are_left_alone(self, mocker, tmp_path):
+        db = self._db(
+            tmp_path,
+            main=[("Eier", 1, {"retinol_mcg": None})],
+            foods=[(2, {"retinol_mcg": 5.0})],
+        )
+        db.close()
+        path = tmp_path / "test_db.json"
+        before = path.read_bytes()
+        db = TinyDB(str(path))
+        fetch = mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss")
+
+        report = backfill_retinol(db, "k")
+        db.close()
+
+        fetch.assert_not_called()
+        assert report["filled"] == 0
+        assert path.read_bytes() == before
+
+    def test_stops_fetching_after_rate_limit_but_keeps_what_it_filled(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[("A", 1, {}), ("B", 2, {}), ("C", 3, {})])
+        fetch = mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            side_effect=[self._hit(1.0), "rate_limited", self._hit(3.0)],
+        )
+
+        report = backfill_retinol(db, "k")
+
+        assert fetch.call_count == 2
+        assert report["filled"] == 1
+        assert report["rate_limited"] is True
+        assert report["failed"] == []
+        assert db.search(Query().original_name == "A")[0]["per_100g"] == {"retinol_mcg": 1.0}
+        assert db.search(Query().original_name == "C")[0]["per_100g"] == {}
+
+    def test_failed_and_gone_are_reported(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[("Kaputt", 1, {}), ("Weg", 2, {})], foods=[(3, {})])
+        mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss", side_effect=["failed", "gone", self._hit(None)]
+        )
+
+        report = backfill_retinol(db, "k")
+
+        assert report == {
+            "filled": 1, "no_usda_id": [], "failed": ["Kaputt"], "gone": ["Weg"], "rate_limited": False,
+            "stopped_after_failures": False,
+        }
+        assert "retinol_mcg" not in db.search(Query().original_name == "Kaputt")[0]["per_100g"]
+        assert db.search(Query().original_name == "Weg")[0]["per_100g"] == {"retinol_mcg": None}
+        assert db.table("usda_foods").all()[0]["per_100g"] == {"retinol_mcg": None}
+
+    def test_stops_after_five_failures_in_a_row_and_leaves_the_rest_unattempted(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[(f"F{i}", i + 1, {}) for i in range(8)])
+        fetch = mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            side_effect=["failed"] * 5 + [self._hit(9.0)] * 3,
+        )
+
+        report = backfill_retinol(db, "k")
+
+        assert fetch.call_count == 5
+        assert report["stopped_after_failures"] is True
+        assert report["rate_limited"] is False
+        assert report["filled"] == 0
+        assert report["failed"] == ["F0", "F1", "F2", "F3", "F4"]
+        assert "retinol_mcg" not in db.search(Query().original_name == "F6")[0]["per_100g"]
+
+    def test_a_success_or_gone_in_between_resets_the_failure_count(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[(f"F{i}", i + 1, {}) for i in range(10)])
+        fetch = mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            side_effect=["failed"] * 4 + [self._hit(1.0)] + ["failed"] * 4 + ["gone"],
+        )
+
+        report = backfill_retinol(db, "k")
+
+        assert fetch.call_count == 10
+        assert report["stopped_after_failures"] is False
+        assert len(report["failed"]) == 8
+
+    def test_progress_is_reported_every_25_fetches_with_the_total(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[(f"F{i}", i + 1, {}) for i in range(60)])
+        mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value=self._hit(1.0))
+        calls: list[tuple[int, int]] = []
+
+        backfill_retinol(db, "k", progress=lambda done, total: calls.append((done, total)))
+
+        assert calls == [(25, 60), (50, 60)]
+
+    def test_shared_ids_count_once_in_the_progress_total(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[(f"F{i}", 1, {}) for i in range(30)], foods=[(1, {})])
+        mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value=self._hit(1.0))
+        calls: list[tuple[int, int]] = []
+
+        backfill_retinol(db, "k", progress=lambda done, total: calls.append((done, total)))
+
+        assert calls == []

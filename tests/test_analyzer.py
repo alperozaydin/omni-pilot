@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from omni_pilot.analyzer import analyze, determine_status
-from tests.helpers import enrichment
+from tests.helpers import enrichment, food_entry
 
 
 class TestDetermineStatus:
@@ -30,6 +30,15 @@ class TestDetermineStatus:
 
     def test_ok_at_exact_ul(self):
         assert determine_status(2000.0, 90.0, 2000.0) == "ok"
+
+    def test_high_from_ul_figure_when_given(self):
+        assert determine_status(45.0, 15.0, 35.0, 40.0) == "high"
+
+    def test_value_above_ul_is_not_high_when_ul_figure_is_below(self):
+        assert determine_status(50.0, 15.0, 35.0, 20.0) == "ok"
+
+    def test_target_still_judged_on_value_when_ul_figure_is_given(self):
+        assert determine_status(5.0, 15.0, 35.0, 0.0) == "deficient"
 
 
 class TestAnalyze:
@@ -226,6 +235,242 @@ class TestStatusOnShownValue:
 
     def test_above_ul_when_shown_is_still_high(self):
         assert self._vitamin_c(2000.06)["status"] == "high"
+
+
+class TestUpperLimitScope:
+    """The UL is compared with the intake it covers; a High names its sources."""
+
+    REF_RANGES = {
+        "demographic": {},
+        "nutrients": {
+            "b3_niacin_mg": {
+                "name": "Niacin", "unit": "mg", "type": "rda", "rda": 15, "ul": 35,
+                "ul_applies_to": "supplements",
+            },
+            "magnesium_mg": {
+                "name": "Magnesium", "unit": "mg", "type": "ai", "ai": 350, "ul": 350,
+                "ul_applies_to": "supplements",
+            },
+            "vitamin_a_mcg": {
+                "name": "Vitamin A", "unit": "mcg", "type": "rda", "rda": 850, "ul": 3000,
+                "ul_applies_to": "retinol",
+            },
+            "sodium_mg": {"name": "Sodium", "unit": "mg", "type": "ai", "ai": 1500, "ul": 2300},
+            "zinc_mg": {"name": "Zinc", "unit": "mg", "type": "rda", "rda": 14, "ul": 40},
+            "vitamin_k_mcg": {"name": "Vitamin K", "unit": "mcg", "type": "ai", "ai": 70},
+        },
+    }
+
+    def _analyze(self, entries: list[dict], profiles=None, supplements=None, custom=None) -> dict:
+        result = analyze(entries, enrichment(profiles, custom=custom), self.REF_RANGES, supplements)
+        return result["nutrients"]
+
+    def test_niacin_from_food_above_the_limit_is_ok(self):
+        # The 2026-10-23 case: 36.4 mg of niacin, all of it from food
+        nutrients = self._analyze([food_entry("Hähnchenbrust")], {"Hähnchenbrust": {"b3_niacin_mg": 36.4}})
+
+        niacin = nutrients["b3_niacin_mg"]
+        assert niacin["status"] == "ok"
+        assert niacin["daily_avg"] == pytest.approx(36.4)
+        assert niacin["ul_applies_to"] == "supplements"
+        assert niacin["ul_figure"] == 0.0
+        assert niacin["high_sources"] == []
+
+    def test_niacin_supplement_above_the_limit_is_high_with_supplement_as_only_source(self):
+        nutrients = self._analyze(
+            [food_entry("Brot")], {"Brot": {"b3_niacin_mg": 5.0}}, supplements={"b3_niacin_mg": 40.0},
+        )
+
+        niacin = nutrients["b3_niacin_mg"]
+        assert niacin["status"] == "high"
+        assert niacin["daily_avg"] == pytest.approx(45.0)
+        assert niacin["ul_figure"] == pytest.approx(40.0)
+        assert niacin["high_sources"] == [{"name": "supplement", "amount": 40.0}]
+
+    def test_niacin_supplement_below_the_limit_is_ok_even_with_food_above(self):
+        nutrients = self._analyze(
+            [food_entry("Hähnchenbrust")], {"Hähnchenbrust": {"b3_niacin_mg": 30.0}},
+            supplements={"b3_niacin_mg": 20.0},
+        )
+
+        niacin = nutrients["b3_niacin_mg"]
+        assert niacin["daily_avg"] == pytest.approx(50.0)
+        assert niacin["ul_figure"] == pytest.approx(20.0)
+        assert niacin["status"] == "ok"
+
+    def test_magnesium_supplement_above_350_is_high(self):
+        nutrients = self._analyze(
+            [food_entry("Haferflocken")], {"Haferflocken": {"magnesium_mg": 130.0}},
+            supplements={"magnesium_mg": 400.0},
+        )
+
+        magnesium = nutrients["magnesium_mg"]
+        assert magnesium["status"] == "high"
+        assert magnesium["ul_figure"] == pytest.approx(400.0)
+        assert magnesium["high_sources"] == [{"name": "supplement", "amount": 400.0}]
+
+    def test_magnesium_from_food_above_350_is_ok(self):
+        nutrients = self._analyze(
+            [food_entry("Kürbiskerne")], {"Kürbiskerne": {"magnesium_mg": 550.0}},
+        )
+
+        assert nutrients["magnesium_mg"]["status"] == "ok"
+
+    def test_supplement_only_limit_still_reports_low(self):
+        nutrients = self._analyze([food_entry("Brot")], {"Brot": {"b3_niacin_mg": 5.0}})
+
+        assert nutrients["b3_niacin_mg"]["status"] == "deficient"
+
+    def test_vitamin_a_from_carrots_is_not_high(self):
+        # 500 g of carrots: 4175 mcg RAE, all of it beta-carotene, no retinol
+        nutrients = self._analyze(
+            [food_entry("Karotten", 500.0)], {"Karotten": {"vitamin_a_mcg": 835.0, "retinol_mcg": 0.0}},
+        )
+
+        vitamin_a = nutrients["vitamin_a_mcg"]
+        assert vitamin_a["daily_avg"] == pytest.approx(4175.0)
+        assert vitamin_a["ul_figure"] == 0.0
+        assert vitamin_a["status"] == "ok"
+        assert vitamin_a["high_sources"] == []
+
+    def test_vitamin_a_from_liver_is_high_with_retinol_sources(self):
+        entries = [food_entry("Rinderleber", 70.0), food_entry("Eier", 100.0)]
+        profiles = {
+            "Rinderleber": {"vitamin_a_mcg": 5000.0, "retinol_mcg": 4968.0},
+            "Eier": {"vitamin_a_mcg": 170.0, "retinol_mcg": 160.0},
+        }
+
+        nutrients = self._analyze(entries, profiles, supplements={"vitamin_a_mcg": 800.0})
+
+        vitamin_a = nutrients["vitamin_a_mcg"]
+        assert vitamin_a["status"] == "high"
+        # The target check stays on RAE plus the supplement
+        assert vitamin_a["daily_avg"] == pytest.approx(3500.0 + 170.0 + 800.0)
+        # The UL check counts retinol plus the supplement
+        assert vitamin_a["ul_figure"] == pytest.approx(3477.6 + 160.0 + 800.0)
+        sources = vitamin_a["high_sources"]
+        assert [s["name"] for s in sources] == ["Rinderleber", "supplement", "Eier"]
+        assert [s["amount"] for s in sources] == pytest.approx([3477.6, 800.0, 160.0])
+
+    def test_vitamin_a_food_without_retinol_key_counts_zero(self):
+        # An older cache entry whose retinol backfill failed has no key at all
+        nutrients = self._analyze([food_entry("Leberwurst")], {"Leberwurst": {"vitamin_a_mcg": 5000.0}})
+
+        vitamin_a = nutrients["vitamin_a_mcg"]
+        assert vitamin_a["ul_figure"] == 0.0
+        assert vitamin_a["status"] == "ok"
+
+    def test_vitamin_a_food_with_retinol_none_counts_zero(self):
+        nutrients = self._analyze(
+            [food_entry("Leberwurst")], {"Leberwurst": {"vitamin_a_mcg": 5000.0, "retinol_mcg": None}},
+        )
+
+        assert nutrients["vitamin_a_mcg"]["ul_figure"] == 0.0
+
+    def test_vitamin_a_supplement_counts_as_retinol(self):
+        nutrients = self._analyze(
+            [food_entry("Karotten")], {"Karotten": {"vitamin_a_mcg": 835.0, "retinol_mcg": 0.0}},
+            supplements={"vitamin_a_mcg": 3100.0},
+        )
+
+        vitamin_a = nutrients["vitamin_a_mcg"]
+        assert vitamin_a["status"] == "high"
+        assert vitamin_a["high_sources"] == [{"name": "supplement", "amount": 3100.0}]
+
+    def test_retinol_of_custom_food_parts_counts_by_share(self):
+        custom = {"Leberknödel": {
+            "recipe": "leberknoedel", "macro_distance": 0.1,
+            "parts": [
+                {"share": 0.5, "fdc_id": 1, "usda_name": "Beef liver",
+                 "per_100g": {"vitamin_a_mcg": 5000.0, "retinol_mcg": 4968.0}},
+                {"share": 0.5, "fdc_id": 2, "usda_name": "Bread crumbs",
+                 "per_100g": {"vitamin_a_mcg": 0.0}},
+            ],
+        }}
+
+        nutrients = self._analyze([food_entry("Leberknödel", 200.0)], custom=custom)
+
+        vitamin_a = nutrients["vitamin_a_mcg"]
+        assert vitamin_a["ul_figure"] == pytest.approx(4968.0)
+        assert vitamin_a["high_sources"] == [{"name": "Leberknödel", "amount": pytest.approx(4968.0)}]
+
+    def test_sodium_from_food_stays_high_with_food_sources(self):
+        # Amounts are daily averages: each food's total over the two days, halved
+        entries = [
+            food_entry("Brot", 200.0, "2026-10-01"),
+            food_entry("Feta", 100.0, "2026-10-01"),
+            food_entry("Brot", 300.0, "2026-10-02"),
+            food_entry("Feta", 200.0, "2026-10-02"),
+        ]
+        profiles = {"Brot": {"sodium_mg": 500.0}, "Feta": {"sodium_mg": 1100.0}}
+
+        nutrients = self._analyze(entries, profiles)
+
+        sodium = nutrients["sodium_mg"]
+        assert sodium["status"] == "high"
+        assert sodium["ul_applies_to"] is None
+        assert sodium["ul_figure"] == pytest.approx(2900.0)
+        assert sodium["high_sources"] == [
+            {"name": "Feta", "amount": pytest.approx(1650.0)},
+            {"name": "Brot", "amount": pytest.approx(1250.0)},
+        ]
+
+    def test_sources_with_equal_amounts_are_ordered_by_name(self):
+        entries = [food_entry("Salami"), food_entry("Feta")]
+        profiles = {"Salami": {"sodium_mg": 1500.0}, "Feta": {"sodium_mg": 1500.0}}
+
+        sources = self._analyze(entries, profiles)["sodium_mg"]["high_sources"]
+
+        assert [s["name"] for s in sources] == ["Feta", "Salami"]
+
+    def test_supplement_as_only_source_of_an_all_sources_high(self):
+        nutrients = self._analyze(
+            [food_entry("Apfel")], {"Apfel": {"zinc_mg": 0.0}}, supplements={"zinc_mg": 45.0},
+        )
+
+        zinc = nutrients["zinc_mg"]
+        assert zinc["status"] == "high"
+        assert zinc["high_sources"] == [{"name": "supplement", "amount": 45.0}]
+
+    def test_custom_food_is_one_source_under_its_logged_name(self):
+        custom = {"Salat Caprese": {
+            "recipe": "caprese", "macro_distance": 0.1,
+            "parts": [
+                {"share": 0.75, "fdc_id": 1, "usda_name": "Tomatoes", "per_100g": {"sodium_mg": 200.0}},
+                {"share": 0.25, "fdc_id": 2, "usda_name": "Mozzarella", "per_100g": {"sodium_mg": 2000.0}},
+            ],
+        }}
+        entries = [food_entry("Salat Caprese", 400.0), food_entry("Brot")]
+
+        nutrients = self._analyze(entries, {"Brot": {"sodium_mg": 500.0}}, custom=custom)
+
+        # 300 g of tomatoes (600 mg) and 100 g of mozzarella (2000 mg): one source
+        assert nutrients["sodium_mg"]["high_sources"] == [
+            {"name": "Salat Caprese", "amount": pytest.approx(2600.0)},
+            {"name": "Brot", "amount": pytest.approx(500.0)},
+        ]
+
+    def test_not_high_has_no_sources(self):
+        nutrients = self._analyze([food_entry("Brot")], {"Brot": {"sodium_mg": 1000.0}})
+
+        sodium = nutrients["sodium_mg"]
+        assert sodium["status"] == "low"
+        assert sodium["ul_figure"] == pytest.approx(1000.0)
+        assert sodium["high_sources"] == []
+
+    def test_nutrient_without_ul_has_no_ul_figure(self):
+        nutrients = self._analyze([food_entry("Spinat")], {"Spinat": {"vitamin_k_mcg": 480.0}})
+
+        vitamin_k = nutrients["vitamin_k_mcg"]
+        assert vitamin_k["ul_figure"] is None
+        assert vitamin_k["ul_applies_to"] is None
+        assert vitamin_k["high_sources"] == []
+
+    def test_ul_figure_is_judged_on_its_shown_value(self):
+        # 35.04 is shown as 35.0, which does not exceed the limit
+        nutrients = self._analyze([food_entry("Brot")], {"Brot": {}}, supplements={"b3_niacin_mg": 35.04})
+
+        assert nutrients["b3_niacin_mg"]["status"] == "ok"
 
 
 class TestCoverageAccounting:

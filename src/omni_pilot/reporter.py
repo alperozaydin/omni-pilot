@@ -203,6 +203,38 @@ def _custom_foods_line(coverage: dict) -> tuple[str, bool] | None:
     return f"Custom foods: {', '.join(described)}", flagged
 
 
+def _amount(x: float) -> str:
+    """A source amount: whole numbers, one decimal below 10."""
+    return f"{x:,.1f}" if round(x, 1) < 10 else f"{x:,.0f}"
+
+
+def _high_lines(nutrients: dict) -> list[str]:
+    """One line per High nutrient, in table order, saying what put it above its limit.
+
+    The status is the analyzer's; this only explains it.
+    """
+    lines = []
+    for keys in NUTRIENT_CATEGORIES.values():
+        for key in keys:
+            n = nutrients.get(key)
+            if n is None or n["status"] != "high":
+                continue
+            figure, ul, unit = n["ul_figure"], n["ul"], n["unit"]
+            head = f"† {n['name']}: "
+            amounts = f"{figure:,.1f} of {ul:,.1f} {unit}/day"
+            if n["ul_applies_to"] == "supplements":
+                lines.append(f"{head}supplement {amounts} — food isn't counted toward this limit")
+                continue
+            if n["ul_applies_to"] == "retinol":
+                head += "retinol "
+            sources = ", ".join(
+                f"{s['name']} {_amount(s['amount'])} ({s['amount'] / figure * 100:.0f}%)"
+                for s in n["high_sources"][:3]
+            )
+            lines.append(f"{head}{amounts} — {sources}")
+    return lines
+
+
 def print_terminal_report(result: dict, settings: dict) -> None:
     """Print a Rich-formatted micronutrient report to the terminal."""
     console = Console()
@@ -268,6 +300,8 @@ def print_terminal_report(result: dict, settings: dict) -> None:
             )
             if n["is_floor"]:
                 label = f"{label}*"
+            if n["status"] == "high":
+                label = f"{label}†"
             target_str = (
                 f"{n['target']:.1f}" if n["target"] is not None else "—"
             )
@@ -292,6 +326,13 @@ def print_terminal_report(result: dict, settings: dict) -> None:
             "  * computed from partial USDA data — the true value can only be higher",
             style="dim",
         )
+        console.print()
+
+    high_lines = _high_lines(nutrients)
+    for line in high_lines:
+        # Text, not a markup string: food names can contain "[...]".
+        console.print(Text(f"  {line}", style="dim"))
+    if high_lines:
         console.print()
 
     logged_fiber_line = _logged_fiber_line(coverage)
@@ -412,10 +453,14 @@ HTML_TEMPLATE = """\
     {% if has_floor %}
     <p class="footnote">* computed from partial USDA data — the true value can only be higher</p>
     {% endif %}
+    {% for line in high_lines %}
+    <p class="footnote">{{ line }}</p>
+    {% endfor %}
     {% if logged_fiber_line %}
     <p class="footnote">{{ logged_fiber_line }}</p>
     {% endif %}
-    {% if skipped_foods or not_in_usda_line or lookup_failed_line or untranslated_line or low_confidence_line or estimated_weights_line %}
+    {% if skipped_foods or not_in_usda_line or lookup_failed_line or untranslated_line
+          or low_confidence_line or estimated_weights_line %}
     <div class="warnings">
         {% if skipped_foods %}<p>⚠ Skipped: {{ skipped_foods|join(", ") }}</p>{% endif %}
         {% if not_in_usda_line %}<p>⚠ {{ not_in_usda_line }}</p>{% endif %}
@@ -466,6 +511,8 @@ def generate_html_report(result: dict, output_path: str) -> None:
                 )
                 if n["is_floor"]:
                     label = f"{label}*"
+                if n["status"] == "high":
+                    label = f"{label}†"
                 n["status_label"] = f"{emoji} {label}"
                 cat_nutrients.append(n)
         categories.append((category, cat_nutrients))
@@ -484,6 +531,7 @@ def generate_html_report(result: dict, output_path: str) -> None:
         untranslated_line=_untranslated_line(coverage),
         low_confidence_line=_low_confidence_line(coverage),
         estimated_weights_line=_estimated_weights_line(coverage),
+        high_lines=_high_lines(nutrients),
         logged_fiber_line=_logged_fiber_line(coverage),
         custom_recipes=[
             {

@@ -6,11 +6,16 @@ from collections import defaultdict
 from typing import TypedDict
 
 from omni_pilot.config import get_nutrient_target
-from omni_pilot.enricher import EnrichmentResult
+from omni_pilot.enricher import RETINOL_KEY, EnrichmentResult
 from omni_pilot.matcher import WeightEstimate
 from omni_pilot.parser import LastDayCheck
 
 logger = logging.getLogger(__name__)
+
+
+class HighSource(TypedDict):
+    name: str  # a logged food name, or "supplement"
+    amount: float  # daily amount, in the nutrient's unit (retinol for a "retinol" UL)
 
 
 class NutrientResult(TypedDict):
@@ -20,10 +25,16 @@ class NutrientResult(TypedDict):
     target: float | None
     target_type: str
     ul: float | None
+    # What the UL counts: None (the daily average), "supplements" or "retinol".
+    ul_applies_to: str | None
+    # The figure compared with the UL; None when there is no UL.
+    ul_figure: float | None
     status: str
     pct_of_target: float | None
     coverage_pct: float | None
     is_floor: bool
+    # Empty unless status is "high"; largest first, then by name.
+    high_sources: list[HighSource]
 
 
 class LowConfidenceFood(TypedDict):
@@ -128,6 +139,22 @@ def _food_parts(
     return None
 
 
+def _high_sources(
+    food_totals: dict[str, float], num_days: int, supplement: float | None,
+) -> list[HighSource]:
+    """The sources of a UL figure as daily amounts, largest first; zero amounts left out."""
+    sources = [
+        HighSource(name=food_name, amount=round(total / num_days, 2))
+        for food_name, total in food_totals.items()
+    ]
+    if supplement is not None:
+        sources.append(HighSource(name="supplement", amount=round(supplement, 2)))
+    return sorted(
+        (source for source in sources if source["amount"] > 0),
+        key=lambda source: (-source["amount"], source["name"]),
+    )
+
+
 def _custom_recipe_uses(
     custom: dict, weights_g: dict[str, float],
 ) -> list[CustomRecipeUse]:
@@ -157,12 +184,17 @@ def _custom_recipe_uses(
     )
 
 
-def determine_status(value: float, target: float, ul: float | None) -> str:
+def determine_status(
+    value: float, target: float, ul: float | None, ul_figure: float | None = None,
+) -> str:
     """Determine nutrient status based on value vs target and UL.
+
+    The UL is compared with `ul_figure` when given (the intake the UL
+    covers), else with `value`; the target always with `value`.
 
     Returns one of: "ok", "low", "deficient", "high".
     """
-    if ul is not None and value > ul:
+    if ul is not None and (value if ul_figure is None else ul_figure) > ul:
         return "high"
     if value >= target:
         return "ok"
@@ -199,6 +231,11 @@ def analyze(
     logged MacroFactor fiber is above zero counts that figure as it is, and
     its whole weight as measured. An empty or zero cell is not trusted (the
     export uses both for "unknown") and falls back to USDA.
+
+    The UL is compared with the intake it covers (`ul_applies_to`): the daily
+    average, the supplement alone, or retinol from food plus the supplement.
+    A High lists its sources: each logged food name (a custom food as one)
+    with its daily amount, and the supplement.
     """
     total_entries = len(entries)
     mapped_entries = 0
@@ -213,6 +250,11 @@ def analyze(
 
     # Collect all nutrient keys from reference_ranges
     nutrient_keys = list(ref_ranges["nutrients"].keys())
+    # Nutrients whose UL counts food: their totals are also kept per logged food name
+    food_ul_keys = {
+        key for key, info in ref_ranges["nutrients"].items()
+        if info.get("ul") is not None and info.get("ul_applies_to") is None
+    }
 
     # Daily totals: date -> reference nutrient key -> total (components combined)
     daily_totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -234,6 +276,10 @@ def analyze(
     lookup_failed_weight_g = 0.0
     untranslated_weight_g = 0.0
     dates: set[str] = set()
+    # Reference nutrient key -> logged food name -> total over the counted days
+    food_totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    # Logged food name -> retinol total (mcg) over the counted days; no coverage
+    retinol_totals: dict[str, float] = defaultdict(float)
 
     for entry in entries:
         food_name = entry["food_name"]
@@ -285,9 +331,12 @@ def analyze(
             measured_weight_g[LOGGED_NUTRIENT] += total_weight_g
             daily_totals[entry_date][LOGGED_NUTRIENT] += logged_fiber_g
             logged_fiber_total_g += logged_fiber_g
+            if LOGGED_NUTRIENT in food_ul_keys:
+                food_totals[LOGGED_NUTRIENT][food_name] += logged_fiber_g
 
         for share, food_micros in parts:
             part_weight_g = total_weight_g * share
+            retinol_totals[food_name] += (food_micros.get(RETINOL_KEY) or 0.0) * (part_weight_g / 100.0)
             for nutrient_key in nutrient_keys:
                 if uses_logged_fiber and nutrient_key == LOGGED_NUTRIENT:
                     continue
@@ -304,7 +353,10 @@ def analyze(
                     value * 1000.0 if ck in ("omega3_epa_mg", "omega3_dha_mg") else value
                     for ck, value in zip(component_keys, component_values)
                 )
-                daily_totals[entry_date][nutrient_key] += contribution * (part_weight_g / 100.0)
+                amount = contribution * (part_weight_g / 100.0)
+                daily_totals[entry_date][nutrient_key] += amount
+                if nutrient_key in food_ul_keys:
+                    food_totals[nutrient_key][food_name] += amount
 
     unresolved_on_counted_days_g = sum(
         grams for date, grams in unresolved_weight_by_date_g.items() if date in dates
@@ -333,7 +385,19 @@ def analyze(
 
         # Add supplement contribution. Supplements carry no weight, so they do
         # not participate in coverage.
-        daily_avg += supplements.get(nutrient_key, 0.0)
+        supplement = supplements.get(nutrient_key)
+        daily_avg += supplement or 0.0
+
+        # The figure the UL is compared with: the intake the UL covers.
+        ul_applies_to = nutrient_info.get("ul_applies_to")
+        if ul is None:
+            ul_figure = None
+        elif ul_applies_to == "supplements":
+            ul_figure = supplement or 0.0
+        elif ul_applies_to == "retinol":
+            ul_figure = sum(retinol_totals.values()) / num_days + (supplement or 0.0)
+        else:
+            ul_figure = daily_avg
 
         measured = measured_weight_g.get(nutrient_key, 0.0)
         unmeasured = unmeasured_weight_g.get(nutrient_key, 0.0)
@@ -343,10 +407,12 @@ def analyze(
             round(100.0 * measured / attributable, 1) if attributable > 0 else None
         )
 
-        # Judged on the figure the reports show (one decimal), so 109.96 shown as
+        # Judged on the figures the reports show (one decimal), so 109.96 shown as
         # 110.0 is not "low" against a target of 110.
         if target is not None:
-            status = determine_status(round(daily_avg, 1), target, ul)
+            status = determine_status(
+                round(daily_avg, 1), target, ul, round(ul_figure, 1) if ul_figure is not None else None,
+            )
             pct = (daily_avg / target * 100) if target > 0 else None
         else:
             status = "unknown"
@@ -359,6 +425,15 @@ def analyze(
             coverage_pct is None or coverage_pct < 100.0
         )
 
+        high_sources: list[HighSource] = []
+        if status == "high":
+            if ul_applies_to == "supplements":
+                high_sources = _high_sources({}, num_days, supplement)
+            elif ul_applies_to == "retinol":
+                high_sources = _high_sources(retinol_totals, num_days, supplement)
+            else:
+                high_sources = _high_sources(food_totals[nutrient_key], num_days, supplement)
+
         nutrients_result[nutrient_key] = NutrientResult(
             name=nutrient_info["name"],
             unit=nutrient_info["unit"],
@@ -366,10 +441,13 @@ def analyze(
             target=target,
             target_type=target_type,
             ul=ul,
+            ul_applies_to=ul_applies_to,
+            ul_figure=round(ul_figure, 2) if ul_figure is not None else None,
             status=status,
             pct_of_target=round(pct, 1) if pct is not None else None,
             coverage_pct=coverage_pct,
             is_floor=is_floor,
+            high_sources=high_sources,
         )
 
     low_confidence_foods = sorted(
@@ -392,7 +470,10 @@ def analyze(
         round(100.0 * low_confidence_kcal / analysed_kcal, 1) if analysed_kcal > 0 else 0.0
     )
     estimated_weights = sorted(
-        (EstimatedWeightFood(name=food_name, estimates=food_estimates) for food_name, food_estimates in estimates.items()),
+        (
+            EstimatedWeightFood(name=food_name, estimates=food_estimates)
+            for food_name, food_estimates in estimates.items()
+        ),
         key=lambda food: (
             -sum(e["estimated_g"] if e["estimated_g"] is not None else e["logged_g"] for e in food["estimates"]),
             food["name"],
