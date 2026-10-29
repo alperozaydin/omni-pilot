@@ -4,10 +4,26 @@ import os
 
 import pytest
 
-from omni_pilot.reporter import _estimated_weights_line, generate_html_report, print_terminal_report
+from omni_pilot.reporter import (
+    _estimated_weights_line,
+    _high_lines,
+    generate_html_report,
+    print_terminal_report,
+)
 
 
 def _make_analysis_result() -> dict:
+    result = _base_analysis_result()
+    for n in result["nutrients"].values():
+        n["ul_applies_to"] = None
+        n["ul_figure"] = n["ul"]
+        n["high_sources"] = (
+            [{"name": "bread", "amount": 900.0}] if n["status"] == "high" else []
+        )
+    return result
+
+
+def _base_analysis_result() -> dict:
     return {
         "period": {"start": "2026-07-13", "end": "2026-08-09", "days": 21, "left_out_day": None},
         "nutrients": {
@@ -522,3 +538,126 @@ class TestFittedCustomFoods:
         generate_html_report(self._result(fitted=True), html_path)
         with open(html_path) as f:
             assert "Chicken and Rice — 700 g — ⚠ macros off 20%" in f.read()
+
+
+def _high_nutrient(name, unit, ul, figure, applies_to, sources, avg=None) -> dict:
+    return {
+        "name": name, "unit": unit,
+        "daily_avg": avg if avg is not None else figure, "target": ul / 2, "target_type": "rda",
+        "ul": ul, "ul_applies_to": applies_to, "ul_figure": figure,
+        "status": "high", "pct_of_target": 200.0,
+        "coverage_pct": 100.0, "is_floor": False,
+        "high_sources": [{"name": n, "amount": a} for n, a in sources],
+    }
+
+
+def _high_nutrients() -> dict:
+    # Deliberately not in table order: the lines must follow NUTRIENT_CATEGORIES.
+    return {
+        "sodium_mg": _high_nutrient(
+            "Sodium", "mg", 2300.0, 3100.0, None,
+            [("bread", 900.0), ("feta", 610.0), ("salami", 480.0), ("butter", 100.0)],
+        ),
+        "b3_niacin_mg": _high_nutrient(
+            "Niacin", "mg", 35.0, 40.0, "supplements", [("supplement", 40.0)], avg=70.0,
+        ),
+        "vitamin_a_mcg": _high_nutrient(
+            "Vitamin A", "mcg", 3000.0, 4437.6, "retinol",
+            [("Rinderleber", 3478.0), ("supplement", 800.0), ("Eier", 160.0), ("Butter", 5.0)],
+        ),
+    }
+
+
+def _result_with_high() -> dict:
+    result = _make_analysis_result()
+    result["nutrients"].update(_high_nutrients())
+    return result
+
+
+class TestHighLines:
+    def test_high_lines_for_each_kind(self):
+        assert _high_lines(_high_nutrients()) == [
+            "† Vitamin A: retinol 4,437.6 of 3,000.0 mcg/day — "
+            "Rinderleber 3,478 (78%), supplement 800 (18%), Eier 160 (4%)",
+            "† Niacin: supplement 40.0 of 35.0 mg/day — food isn't counted toward this limit",
+            "† Sodium: 3,100.0 of 2,300.0 mg/day — bread 900 (29%), feta 610 (20%), salami 480 (15%)",
+        ]
+
+    def test_figure_just_above_the_limit_reads_above_it(self):
+        nutrients = {"sodium_mg": _high_nutrient("Sodium", "mg", 2300.0, 2300.06, None, [("bread", 2300.06)])}
+        assert _high_lines(nutrients)[0].startswith("† Sodium: 2,300.1 of 2,300.0 mg/day")
+
+    def test_fewer_than_three_sources(self):
+        nutrients = {"sodium_mg": _high_nutrient("Sodium", "mg", 2000.0, 3000.0, None, [("bread", 3000.0)])}
+        assert _high_lines(nutrients) == ["† Sodium: 3,000.0 of 2,000.0 mg/day — bread 3,000 (100%)"]
+
+    def test_small_amounts_keep_one_decimal(self):
+        nutrients = {"b3_niacin_mg": _high_nutrient("Niacin", "mg", 35.0, 40.0, None, [("yeast", 7.46), ("x", 30.0)])}
+        assert "yeast 7.5 (19%)" in _high_lines(nutrients)[0]
+        assert "x 30 (75%)" in _high_lines(nutrients)[0]
+
+    def test_no_lines_without_high(self):
+        nutrients = _high_nutrients()
+        for n in nutrients.values():
+            n["status"] = "ok"
+            n["high_sources"] = []
+        assert _high_lines(nutrients) == []
+
+    def test_terminal_marks_high_rows_and_prints_lines(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
+        settings = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+        print_terminal_report(_result_with_high(), settings)
+        out = capsys.readouterr().out
+        assert "High†" in out
+        assert "† Sodium: 3,100.0 of 2,300.0" in out
+        assert "† Niacin: supplement 40.0 of 35.0" in out
+        assert out.index("† Vitamin A") < out.index("† Niacin") < out.index("† Sodium")
+
+    def test_terminal_prints_bracketed_food_names_literally(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
+        result = _result_with_high()
+        result["nutrients"]["sodium_mg"]["high_sources"] = [{"name": "Feta [Bio]", "amount": 900.0}]
+        settings = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+        print_terminal_report(result, settings)
+        assert "Feta [Bio] 900" in capsys.readouterr().out
+
+    def test_no_dagger_without_high(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
+        result = _result_with_high()
+        for n in result["nutrients"].values():
+            if n["status"] == "high":
+                n["status"] = "ok"
+                n["high_sources"] = []
+        settings = {"output": {"show_amino_acids": True, "show_ok_nutrients": True}}
+        print_terminal_report(result, settings)
+        assert "†" not in capsys.readouterr().out
+
+    def test_high_lines_show_with_show_ok_false(self, capsys, monkeypatch):
+        monkeypatch.setenv("COLUMNS", "200")
+        settings = {"output": {"show_amino_acids": True, "show_ok_nutrients": False}}
+        print_terminal_report(_result_with_high(), settings)
+        out = capsys.readouterr().out
+        assert "High†" in out
+        assert "† Sodium: 3,100.0 of 2,300.0" in out
+        assert "Vitamin C" not in out
+
+    def test_html_marks_high_rows_and_prints_footnotes(self, tmp_path):
+        output_path = str(tmp_path / "report.html")
+        generate_html_report(_result_with_high(), output_path)
+        with open(output_path) as f:
+            html = f.read()
+        assert "High†" in html
+        assert html.count('class="footnote">†') == 3
+        assert "† Sodium: 3,100.0 of 2,300.0 mg/day" in html
+        assert "counted toward this limit" in html
+
+    def test_html_without_high_has_no_dagger(self, tmp_path):
+        result = _result_with_high()
+        for n in result["nutrients"].values():
+            if n["status"] == "high":
+                n["status"] = "ok"
+                n["high_sources"] = []
+        output_path = str(tmp_path / "report.html")
+        generate_html_report(result, output_path)
+        with open(output_path) as f:
+            assert "†" not in f.read()
