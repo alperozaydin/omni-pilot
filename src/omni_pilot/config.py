@@ -31,14 +31,18 @@ def load_reference_ranges(path: str) -> dict:
     """Load reference_ranges.yaml and return as dict.
 
     Raises FileNotFoundError if file does not exist, ReferenceRangesError if a
-    nutrient's ul_applies_to is not one of UL_APPLIES_TO.
+    nutrient is not a mapping or its ul_applies_to is not one of UL_APPLIES_TO.
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Reference ranges file not found: {path}")
     with open(path) as f:
         data = yaml.safe_load(f)
     for key, nutrient in ((data or {}).get("nutrients") or {}).items():
+        if not isinstance(nutrient, dict):
+            raise ReferenceRangesError(f"{key}: entry must be a mapping, not {nutrient!r}")
         applies_to = nutrient.get("ul_applies_to")
+        if applies_to is not None and not isinstance(applies_to, str):
+            raise ReferenceRangesError(f"{key}: ul_applies_to must be a string (supplements or retinol)")
         if applies_to is not None and applies_to not in UL_APPLIES_TO:
             raise ReferenceRangesError(
                 f"{key}: unknown ul_applies_to '{applies_to}' (use supplements or retinol)"

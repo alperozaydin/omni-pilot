@@ -205,7 +205,7 @@ def _custom_foods_line(coverage: dict) -> tuple[str, bool] | None:
 
 def _amount(x: float) -> str:
     """A source amount: whole numbers, one decimal below 10."""
-    return f"{x:,.1f}" if x < 10 else f"{x:,.0f}"
+    return f"{x:,.1f}" if round(x, 1) < 10 else f"{x:,.0f}"
 
 
 def _high_lines(nutrients: dict) -> list[str]:

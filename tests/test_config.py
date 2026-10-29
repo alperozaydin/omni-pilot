@@ -86,6 +86,20 @@ class TestLoadReferenceRanges:
         ):
             load_reference_ranges(str(ref_file))
 
+    def test_nutrient_that_is_not_a_mapping_stops_loading_naming_it(self, tmp_path):
+        ref_file = tmp_path / "reference_ranges.yaml"
+        _write_yaml(str(ref_file), {"nutrients": {"b3_niacin_mg": 15}})
+        with pytest.raises(ReferenceRangesError, match=r"b3_niacin_mg: .*mapping"):
+            load_reference_ranges(str(ref_file))
+
+    def test_ul_applies_to_that_is_not_a_string_stops_loading_naming_the_nutrient(self, tmp_path):
+        ref_file = tmp_path / "reference_ranges.yaml"
+        _write_yaml(str(ref_file), {"nutrients": {
+            "b3_niacin_mg": {"type": "rda", "rda": 15, "ul": 35, "ul_applies_to": ["supplements"]},
+        }})
+        with pytest.raises(ReferenceRangesError, match=r"b3_niacin_mg: ul_applies_to must be"):
+            load_reference_ranges(str(ref_file))
+
     def test_ul_applies_to_with_null_ul_loads(self, tmp_path):
         ref_file = tmp_path / "reference_ranges.yaml"
         _write_yaml(str(ref_file), {"nutrients": {

@@ -596,6 +596,10 @@ class TestHighLines:
         assert "yeast 7.5 (19%)" in _high_lines(nutrients)[0]
         assert "x 30 (75%)" in _high_lines(nutrients)[0]
 
+    def test_amount_that_rounds_to_ten_shows_as_a_whole_number(self):
+        nutrients = {"b3_niacin_mg": _high_nutrient("Niacin", "mg", 35.0, 40.0, None, [("yeast", 9.96), ("x", 30.04)])}
+        assert "yeast 10 (25%)" in _high_lines(nutrients)[0]
+
     def test_no_lines_without_high(self):
         nutrients = _high_nutrients()
         for n in nutrients.values():
