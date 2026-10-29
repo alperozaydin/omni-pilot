@@ -181,3 +181,54 @@ def test_summary_names_entries_without_id_failed_fetches_and_gone_ids(script, mo
     assert "Ohne ID" in out and "no USDA ID" in out
     assert "Kaputt" in out and "retried by the next analyze or another run of this script" in out
     assert "Weg" in out and "no longer" in out
+
+
+def test_repeated_failures_say_to_run_it_again_later_and_still_push_what_it_filled(
+    script, mocker, tmp_path, capsys
+):
+    write_settings(tmp_path, s3=FULL_S3)
+    original = db_with(tmp_path / "scratch.json", count=8)
+    (tmp_path / "scratch.json").unlink()
+    fake = fake_s3(mocker, original)
+    mocker.patch(
+        "omni_pilot.enricher.fetch_usda_food_or_miss", side_effect=[hit()] + ["failed"] * 5 + [hit()] * 2
+    )
+
+    assert run(script) == 0
+
+    out = capsys.readouterr().out
+    assert "Filled retinol for 1 entries" in out
+    assert "USDA kept failing" in out and "run it again later" in out
+    assert ("put", "food_db.json") in fake.calls
+
+
+def test_prints_progress_every_25_fetches(script, mocker, tmp_path, capsys):
+    write_settings(tmp_path)
+    db_with(tmp_path / "db" / "food_db.json", count=30)
+    mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value=hit())
+
+    assert run(script) == 0
+
+    out = capsys.readouterr().out
+    assert "fetched 25 of 30 USDA foods" in out
+    assert "fetched 50" not in out
+
+
+def test_refused_push_says_to_run_the_script_again_not_make_pull(script, mocker, tmp_path, capsys):
+    write_settings(tmp_path, s3=FULL_S3)
+    original = db_with(tmp_path / "scratch.json")
+    (tmp_path / "scratch.json").unlink()
+    fake = fake_s3(mocker, original)
+
+    def other_device_pushes(*args, **kwargs):
+        fake.objects["food_db.json"] = (b"{}", '"db-2"')
+        return hit()
+
+    mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", side_effect=other_device_pushes)
+
+    assert run(script) == 1
+
+    out = capsys.readouterr().out
+    assert "changed" in out
+    assert "Run this script again" in out
+    assert "make pull" not in out

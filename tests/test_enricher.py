@@ -1347,7 +1347,10 @@ class TestBackfillRetinol:
         report = backfill_retinol(db, "k")
 
         assert fetch.call_count == 2
-        assert report == {"filled": 3, "no_usda_id": [], "failed": [], "gone": [], "rate_limited": False}
+        assert report == {
+            "filled": 3, "no_usda_id": [], "failed": [], "gone": [], "rate_limited": False,
+            "stopped_after_failures": False,
+        }
         main = db.search(Query().original_name == "Rinderleber")[0]
         assert main["per_100g"] == {"iron_mg": 1.0, "retinol_mcg": 10.0}
         assert main["reviewed_fdc_id"] == 171140
@@ -1362,7 +1365,10 @@ class TestBackfillRetinol:
         report = backfill_retinol(db, "k")
 
         fetch.assert_not_called()
-        assert report == {"filled": 0, "no_usda_id": ["Ohne ID"], "failed": [], "gone": [], "rate_limited": False}
+        assert report == {
+            "filled": 0, "no_usda_id": ["Ohne ID"], "failed": [], "gone": [], "rate_limited": False,
+            "stopped_after_failures": False,
+        }
         assert "per_100g" not in db.search(Query().original_name == "Nirgends")[0]
 
     def test_entries_with_the_key_are_left_alone(self, mocker, tmp_path):
@@ -1410,7 +1416,55 @@ class TestBackfillRetinol:
 
         assert report == {
             "filled": 1, "no_usda_id": [], "failed": ["Kaputt"], "gone": ["Weg"], "rate_limited": False,
+            "stopped_after_failures": False,
         }
         assert "retinol_mcg" not in db.search(Query().original_name == "Kaputt")[0]["per_100g"]
         assert db.search(Query().original_name == "Weg")[0]["per_100g"] == {"retinol_mcg": None}
         assert db.table("usda_foods").all()[0]["per_100g"] == {"retinol_mcg": None}
+
+    def test_stops_after_five_failures_in_a_row_and_leaves_the_rest_unattempted(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[(f"F{i}", i + 1, {}) for i in range(8)])
+        fetch = mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            side_effect=["failed"] * 5 + [self._hit(9.0)] * 3,
+        )
+
+        report = backfill_retinol(db, "k")
+
+        assert fetch.call_count == 5
+        assert report["stopped_after_failures"] is True
+        assert report["rate_limited"] is False
+        assert report["filled"] == 0
+        assert report["failed"] == ["F0", "F1", "F2", "F3", "F4"]
+        assert "retinol_mcg" not in db.search(Query().original_name == "F6")[0]["per_100g"]
+
+    def test_a_success_or_gone_in_between_resets_the_failure_count(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[(f"F{i}", i + 1, {}) for i in range(10)])
+        fetch = mocker.patch(
+            "omni_pilot.enricher.fetch_usda_food_or_miss",
+            side_effect=["failed"] * 4 + [self._hit(1.0)] + ["failed"] * 4 + ["gone"],
+        )
+
+        report = backfill_retinol(db, "k")
+
+        assert fetch.call_count == 10
+        assert report["stopped_after_failures"] is False
+        assert len(report["failed"]) == 8
+
+    def test_progress_is_reported_every_25_fetches_with_the_total(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[(f"F{i}", i + 1, {}) for i in range(60)])
+        mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value=self._hit(1.0))
+        calls: list[tuple[int, int]] = []
+
+        backfill_retinol(db, "k", progress=lambda done, total: calls.append((done, total)))
+
+        assert calls == [(25, 60), (50, 60)]
+
+    def test_shared_ids_count_once_in_the_progress_total(self, mocker, tmp_path):
+        db = self._db(tmp_path, main=[(f"F{i}", 1, {}) for i in range(30)], foods=[(1, {})])
+        mocker.patch("omni_pilot.enricher.fetch_usda_food_or_miss", return_value=self._hit(1.0))
+        calls: list[tuple[int, int]] = []
+
+        backfill_retinol(db, "k", progress=lambda done, total: calls.append((done, total)))
+
+        assert calls == []

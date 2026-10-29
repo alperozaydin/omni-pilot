@@ -135,13 +135,21 @@ def cmd_push(args: argparse.Namespace) -> None:
         print(f"S3: data files in {client.config.bucket} are up to date")
 
 
-def _push_or_exit(client: S3Client, files: list[DataFile], state_file: str) -> list[str]:
-    """Push the data files that changed; a failure ends the command with exit code 1."""
+PUSH_CONFLICT_HINT = "Run `make pull` (it replaces your local changes), redo them, then push again."
+
+
+def _push_or_exit(
+    client: S3Client, files: list[DataFile], state_file: str, conflict_hint: str = PUSH_CONFLICT_HINT
+) -> list[str]:
+    """Push the data files that changed; a failure ends the command with exit code 1.
+
+    `conflict_hint` is what a refused push (S3 changed meanwhile) tells the user to do.
+    """
     try:
         return push(client, files, state_file)
     except (S3Error, SyncError) as e:
         if isinstance(e, S3Error) and e.kind == "conflict":
-            print(f"Error: {e} Run `make pull` (it replaces your local changes), redo them, then push again.")
+            print(f"Error: {e} {conflict_hint}")
         else:
             print(f"Error: {e}")
         sys.exit(1)

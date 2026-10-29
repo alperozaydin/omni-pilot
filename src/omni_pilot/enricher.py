@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from datetime import date
 from typing import Literal, TypedDict
 
@@ -413,22 +413,44 @@ class BackfillReport(TypedDict):
     failed: list[str]
     gone: list[str]
     rate_limited: bool
+    stopped_after_failures: bool
 
 
-def backfill_retinol(db: TinyDB, api_key: str) -> BackfillReport:
+BACKFILL_MAX_CONSECUTIVE_FAILURES = 5
+BACKFILL_PROGRESS_EVERY = 25
+
+
+def backfill_retinol(
+    db: TinyDB, api_key: str, progress: Callable[[int, int], None] | None = None
+) -> BackfillReport:
     """Fill retinol into every cached profile that lacks it, fetching each USDA ID once.
 
     Covers the matches of the main table (not-found records have no profile and
     are skipped) and then the `usda_foods` entries. An ID shared by several
-    entries is fetched once and written to each. After a rate-limit answer
-    nothing more is fetched; what was filled stays written.
+    entries is fetched once and written to each. After a rate-limit answer, or
+    `BACKFILL_MAX_CONSECUTIVE_FAILURES` failed fetches in a row, nothing more is
+    fetched (the entries not reached are left without the key, not listed as
+    failed); what was filled stays written. `progress(done, total)` is called
+    after every `BACKFILL_PROGRESS_EVERY` fetches, `total` being the distinct
+    IDs to fetch.
     """
-    report = BackfillReport(filled=0, no_usda_id=[], failed=[], gone=[], rate_limited=False)
+    report = BackfillReport(
+        filled=0, no_usda_id=[], failed=[], gone=[], rate_limited=False, stopped_after_failures=False
+    )
     fetched: dict[int, dict | FetchMiss] = {}
     sources: list[tuple[Table | TinyDB, list[dict]]] = [
         (db, db.all()),
         (db.table(USDA_FOODS_TABLE), db.table(USDA_FOODS_TABLE).all()),
     ]
+    total = len({
+        e["usda_fdc_id"] if table is db else e["fdc_id"]
+        for table, entries in sources
+        for e in entries
+        if isinstance(e.get("per_100g"), dict)
+        and RETINOL_KEY not in e["per_100g"]
+        and (e.get("usda_fdc_id") if table is db else e["fdc_id"]) is not None
+    })
+    failures_in_a_row = 0
     for table, entries in sources:
         for entry in entries:
             per_100g = entry.get("per_100g")
@@ -444,9 +466,17 @@ def backfill_retinol(db: TinyDB, api_key: str) -> BackfillReport:
                 report["no_usda_id"].append(label)
                 continue
             if fdc_id not in fetched:
-                if report["rate_limited"]:
+                if report["rate_limited"] or report["stopped_after_failures"]:
                     continue
                 fetched[fdc_id] = fetch_usda_food_or_miss(fdc_id, api_key)
+                if progress is not None and len(fetched) % BACKFILL_PROGRESS_EVERY == 0:
+                    progress(len(fetched), total)
+                if fetched[fdc_id] == "failed":
+                    failures_in_a_row += 1
+                    if failures_in_a_row >= BACKFILL_MAX_CONSECUTIVE_FAILURES:
+                        report["stopped_after_failures"] = True
+                elif fetched[fdc_id] != "rate_limited":
+                    failures_in_a_row = 0
             raw = fetched[fdc_id]
             if raw == "rate_limited":
                 report["rate_limited"] = True
